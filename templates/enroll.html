@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enroll a Doctor</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <header>
+        <h1>Enroll a Doctor</h1>
+        <p class="subtitle">Cromemos Group Limited</p>
+        <nav>
+            <a class="btn" href="/">← Back to Dashboard</a>
+            <a class="btn" href="/feeds">Camera Feeds</a>
+            <a class="btn" href="/logs">Detection Log</a>
+        </nav>
+    </header>
+
+    <section>
+        <form id="enroll-form">
+            <div class="field">
+                <label for="name">Doctor's name</label>
+                <input type="text" id="name" name="name" required
+                       placeholder="e.g. Dr. Smith" autocomplete="off">
+            </div>
+            <div class="field">
+                <label for="camera">Camera</label>
+                <select id="camera" name="camera_id"></select>
+            </div>
+            <button type="submit" class="btn primary">Start Enrollment</button>
+        </form>
+    </section>
+
+    <section>
+        <h2>Live Preview</h2>
+        <div class="preview-wrap">
+            <img id="preview" alt="Selected camera preview">
+        </div>
+        <p class="preview-note">Streamed live only — frames are never recorded or stored.</p>
+    </section>
+
+    <section>
+        <h2>Instructions</h2>
+        <p>After starting, stand <strong>alone</strong> in view of the selected
+           camera with your uniform clearly visible. Only one person should be in
+           the frame — the system will capture 25 samples automatically and save
+           your appearance profile.</p>
+        <div id="status" class="status"></div>
+    </section>
+
+    <script>
+        var pollTimer = null;
+        var currentCamera = null;
+
+        function loadCameras() {
+            fetch("/api/cameras")
+                .then(function (r) { return r.json(); })
+                .then(function (cams) {
+                    var sel = document.getElementById("camera");
+                    sel.innerHTML = "";
+                    cams.forEach(function (c) {
+                        var opt = document.createElement("option");
+                        opt.value = c.id;
+                        opt.textContent = c.label;
+                        sel.appendChild(opt);
+                    });
+                    if (cams.length) {
+                        currentCamera = cams[0].id;
+                        updatePreview();
+                    } else {
+                        document.getElementById("status").textContent = "No cameras configured.";
+                    }
+                })
+                .catch(function (e) { console.error(e); });
+        }
+
+        function updatePreview() {
+            var img = document.getElementById("preview");
+            if (currentCamera) {
+                img.src = "/api/video_preview/" + encodeURIComponent(currentCamera);
+            }
+        }
+
+        document.getElementById("camera").addEventListener("change", function (e) {
+            currentCamera = e.target.value;
+            updatePreview();
+        });
+
+        document.getElementById("enroll-form").addEventListener("submit", function (e) {
+            e.preventDefault();
+            var name = document.getElementById("name").value.trim();
+            var cameraId = document.getElementById("camera").value;
+            var statusEl = document.getElementById("status");
+            statusEl.textContent = "Starting enrollment...";
+
+            fetch("/api/enroll", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name: name, camera_id: cameraId })
+            })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    statusEl.textContent = data.message;
+                    if (data.ok) startPolling(cameraId);
+                })
+                .catch(function (err) {
+                    statusEl.textContent = "Error: " + err;
+                });
+        });
+
+        function startPolling(cameraId) {
+            if (pollTimer) clearInterval(pollTimer);
+            var statusEl = document.getElementById("status");
+            pollTimer = setInterval(function () {
+                fetch("/api/enroll_status")
+                    .then(function (r) { return r.json(); })
+                    .then(function (jobs) {
+                        var job = null;
+                        jobs.forEach(function (j) { if (j.camera_id === cameraId) job = j; });
+                        if (!job) {
+                            statusEl.textContent = "No active enrollment.";
+                            clearInterval(pollTimer);
+                            return;
+                        }
+                        statusEl.textContent = job.message || job.status;
+                        if (job.status === "complete" || job.status === "error") {
+                            clearInterval(pollTimer);
+                            statusEl.textContent += " — you can return to the dashboard.";
+                        }
+                    })
+                    .catch(function (e) { console.error(e); });
+            }, 1000);
+        }
+
+        loadCameras();
+    </script>
+</body>
+</html>

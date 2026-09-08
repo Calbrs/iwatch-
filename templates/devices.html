@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Link a Device Camera</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <header>
+        <h1>Link a Device Camera</h1>
+        <p class="subtitle">Cromemos Group Limited — up to 50 devices</p>
+        <nav>
+            <a class="btn" href="/">← Back to Dashboard</a>
+            <a class="btn" href="/feeds">Camera Feeds</a>
+            <a class="btn" href="/logs">Detection Log</a>
+        </nav>
+    </header>
+
+    <section>
+        <h2>Generate a link</h2>
+        <p>Generate a link, open it on the device with the camera, and grant
+           camera access. The device streams automatically. Approve it on this
+           page to start using it for tracking.</p>
+        <div class="field">
+            <label for="link-label">Camera name</label>
+            <input type="text" id="link-label" placeholder="e.g. Room 3" autocomplete="off">
+        </div>
+        <button id="gen-link" class="btn primary">Generate Link</button>
+        <div id="link-result" class="status"></div>
+    </section>
+
+    <section>
+        <h2>Device links</h2>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Code</th>
+                        <th>Status</th>
+                        <th>Frames</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="links-body">
+                    <tr><td colspan="5">No links yet — use Generate above.</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section>
+        <h2>Linked devices (active cameras)</h2>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>ID</th>
+                        <th>Status</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="devices-body">
+                    <tr><td colspan="4">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <script>
+        function loadLinks() {
+            fetch("/api/links")
+                .then(function (r) { return r.json(); })
+                .then(function (links) {
+                    var tbody = document.getElementById("links-body");
+                    if (!links || links.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="5">No links yet — use Generate above.</td></tr>';
+                        return;
+                    }
+                    tbody.innerHTML = "";
+                    links.forEach(function (lk) {
+                        var tr = document.createElement("tr");
+                        var status = "";
+                        var action = "";
+                        if (lk.status === "active") {
+                            status = '<span class="pill live">Active (' + (lk.camera_id || "") + ')</span>';
+                            action = "";
+                        } else if (lk.status === "awaiting_confirm") {
+                            status = '<span class="pill">Streaming — awaiting approval</span>';
+                            action =
+                                '<button class="btn primary approve-link" data-code="' + lk.code + '">Approve</button> ' +
+                                '<button class="btn discard-link" data-code="' + lk.code + '">Discard</button>';
+                        } else {
+                            status = '<span class="pill">Link created</span>';
+                            action = '<button class="btn discard-link" data-code="' + lk.code + '">Discard</button>';
+                        }
+                        tr.innerHTML =
+                            "<td>" + (lk.label || "") + "</td>" +
+                            "<td>" + lk.code + "</td>" +
+                            "<td>" + status + "</td>" +
+                            "<td>" + (lk.frames || 0) + "</td>" +
+                            "<td>" + action + "</td>";
+                        tbody.appendChild(tr);
+                    });
+                })
+                .catch(function (e) { console.error(e); });
+        }
+
+        function loadDevices() {
+            fetch("/api/cameras")
+                .then(function (r) { return r.json(); })
+                .then(function (cams) {
+                    var tbody = document.getElementById("devices-body");
+                    if (!cams || cams.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="4">No cameras configured.</td></tr>';
+                        return;
+                    }
+                    tbody.innerHTML = "";
+                    cams.forEach(function (c) {
+                        var tr = document.createElement("tr");
+                        var status = c.live
+                            ? '<span class="pill live">Live</span>'
+                            : '<span class="pill">Not connected</span>';
+                        var actions = c.remote
+                            ? '<button class="btn remove" data-id="' + c.id + '">Remove</button>'
+                            : "";
+                        tr.innerHTML = "<td>" + c.label + "</td>" +
+                            "<td>" + c.id + "</td>" +
+                            "<td>" + status + "</td>" +
+                            "<td>" + actions + "</td>";
+                        tbody.appendChild(tr);
+                    });
+                    document.querySelectorAll(".btn.remove").forEach(function (btn) {
+                        btn.addEventListener("click", function () {
+                            fetch("/api/unregister_remote_camera", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ camera_id: btn.dataset.id })
+                            }).then(function () { loadDevices(); loadLinks(); });
+                        });
+                    });
+                })
+                .catch(function (e) { console.error(e); });
+        }
+
+        function pollLink(code) {
+            var s = document.getElementById("link-status");
+            var timer = setInterval(function () {
+                fetch("/api/link/" + code)
+                    .then(function (r) { return r.json(); })
+                    .then(function (d) {
+                        if (!d.ok) {
+                            clearInterval(timer);
+                            s.textContent = "This link is no longer valid.";
+                            return;
+                        }
+                        if (d.status === "active") {
+                            clearInterval(timer);
+                            s.textContent = "Device approved — receiving " +
+                                d.frames + " frames so far. See the cameras table below.";
+                            loadDevices();
+                            loadLinks();
+                        } else if (d.status === "awaiting_confirm") {
+                            s.textContent = "Device is streaming — approve it on this page below to use it for tracking.";
+                        } else {
+                            s.textContent = "Share this link with the device, then approve it here.";
+                        }
+                    })
+                    .catch(function () {});
+            }, 2000);
+        }
+
+        document.getElementById("gen-link").addEventListener("click", function () {
+            var label = document.getElementById("link-label").value.trim() || "Remote Camera";
+            var result = document.getElementById("link-result");
+            result.textContent = "Generating link...";
+            fetch("/api/link/create", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ label: label })
+            })
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                    if (!d.ok) {
+                        result.textContent = d.message;
+                        return;
+                    }
+                    var fullUrl = location.origin + d.link_url;
+                    result.innerHTML =
+                        '<div class="link-copy">' +
+                        '<span class="link-label">Open this link on the device with the camera:</span>' +
+                        '<div class="link-line">' +
+                        '<a id="link-uri" href="' + d.link_url + '" target="_blank">' + fullUrl + "</a>" +
+                        '<button class="btn" id="copy-link">Copy</button>' +
+                        "</div>" +
+                        '<div class="link-status" id="link-status">Share this link with the device, then approve it here.</div>' +
+                        "</div>";
+                    document.getElementById("copy-link").addEventListener("click", function () {
+                        navigator.clipboard.writeText(fullUrl).then(function () {
+                            this.textContent = "Copied!";
+                        }.bind(this)).catch(function () {
+                            prompt("Copy this link:", fullUrl);
+                        });
+                    });
+                    loadLinks();
+                    pollLink(d.code);
+                })
+                .catch(function (e) {
+                    result.textContent = "Error: " + e;
+                });
+        });
+
+        document.addEventListener("click", function (e) {
+            var btn = e.target.closest(".approve-link");
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = "Approving...";
+                fetch("/api/link/" + btn.dataset.code + "/confirm", { method: "POST" })
+                    .then(function (r) { return r.json(); })
+                    .then(function (d) { if (!d.ok) alert(d.message); })
+                    .catch(function () {})
+                    .then(function () { loadLinks(); loadDevices(); });
+                return;
+            }
+            var dl = e.target.closest(".discard-link");
+            if (dl) {
+                dl.disabled = true;
+                fetch("/api/link/" + dl.dataset.code + "/delete", { method: "POST" })
+                    .then(function (r) { return r.json(); })
+                    .then(function (d) { if (!d.ok) alert(d.message); })
+                    .catch(function () {})
+                    .then(function () { loadLinks(); });
+            }
+        });
+
+        loadLinks();
+        loadDevices();
+        setInterval(function () { loadLinks(); loadDevices(); }, 3000);
+    </script>
+</body>
+</html>

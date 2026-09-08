@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Detection Log</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <header>
+        <h1>Detection Log</h1>
+        <p class="subtitle">Cromemos Group Limited — which camera saw which doctor, and when</p>
+        <nav>
+            <a class="btn" href="/">← Back to Dashboard</a>
+            <a class="btn" href="/feeds">Camera Feeds</a>
+            <a class="btn" href="/devices">+ Link a Device Camera</a>
+        </nav>
+    </header>
+
+    <section>
+        <h2>Camera detections</h2>
+        <p class="preview-note">Records each time a tracked doctor is seen in a
+           camera's chair zone. If a doctor is on more than one camera at the
+           same moment, each camera appears as its own row. Refreshes every 5 seconds.</p>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Doctor</th>
+                        <th>Camera</th>
+                    </tr>
+                </thead>
+                <tbody id="detections-body">
+                    <tr><td colspan="3">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <script>
+        function formatSeen(iso) {
+            if (!iso) return "—";
+            var d = new Date(iso.replace("T", " ").replace("Z", ""));
+            return d.toLocaleString();
+        }
+
+        function renderDetections(rows) {
+            var tbody = document.getElementById("detections-body");
+            if (!rows || rows.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="3">No detections recorded yet.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = "";
+            rows.forEach(function (r) {
+                var tr = document.createElement("tr");
+                tr.innerHTML = "<td>" + formatSeen(r.seen_at) + "</td>" +
+                    "<td>" + (r.doctor_name || "") + "</td>" +
+                    "<td>" + (r.camera_label || r.camera_id || "") + "</td>";
+                tbody.appendChild(tr);
+            });
+        }
+
+        function refresh() {
+            fetch("/api/detections?limit=500")
+                .then(function (r) { return r.json(); })
+                .then(renderDetections)
+                .catch(function () {});
+        }
+
+        refresh();
+        setInterval(refresh, 5000);
+    </script>
+</body>
+</html>

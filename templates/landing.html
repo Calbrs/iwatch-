@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clinic Doctor Time Tracker</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <header>
+        <h1>Clinic Doctor Time Tracker</h1>
+        <p class="subtitle">Cromemos Group Limited</p>
+        <nav>
+            <a class="btn" href="/feeds">View Camera Feeds</a>
+            <a class="btn" href="/devices">+ Link a Device Camera</a>
+            <a class="btn" href="/enroll">+ Enroll Doctor</a>
+            <a class="btn" href="/logs">Detection Log</a>
+        </nav>
+    </header>
+
+    <section id="live-status">
+        <h2>Live Status</h2>
+        <div id="cards" class="cards">
+            <p class="loading">Loading...</p>
+        </div>
+    </section>
+
+    <section id="history">
+        <h2>Session History</h2>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Doctor</th>
+                        <th>Clock In</th>
+                        <th>Clock Out</th>
+                        <th>Duration (min)</th>
+                    </tr>
+                </thead>
+                <tbody id="history-body">
+                    <tr><td colspan="4">No sessions recorded yet.</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <script>
+        function formatClock(iso) {
+            if (!iso) return "—";
+            var d = new Date(iso.replace("T", " ").replace("Z", ""));
+            return d.toLocaleString();
+        }
+
+        function elapsedSince(iso) {
+            var d = new Date(iso.replace("T", " ").replace("Z", ""));
+            var diffMs = Date.now() - d.getTime();
+            var minutes = Math.floor(diffMs / 60000);
+            var hours = Math.floor(minutes / 60);
+            minutes = minutes % 60;
+            if (hours > 0) return hours + "h " + minutes + "m";
+            return minutes + "m";
+        }
+
+        function formatDuration(seconds) {
+            if (seconds === null || seconds === undefined) return "—";
+            var mins = Math.round(seconds / 60);
+            return mins + " min";
+        }
+
+        function renderStatus(data) {
+            var container = document.getElementById("cards");
+            var names = Object.keys(data);
+            if (names.length === 0) {
+                container.innerHTML = '<p class="loading">No doctors enrolled yet.</p>';
+                return;
+            }
+            container.innerHTML = "";
+            names.forEach(function (name) {
+                var d = data[name];
+                var card = document.createElement("div");
+                card.className = "card" + (d.in_zone ? " at-chair" : " away");
+                var status = d.in_zone ? "🟢 At Chair" : "⚪ Away";
+                var timeLabel = d.in_zone && d.clock_in
+                    ? "Since " + elapsedSince(d.clock_in)
+                    : d.clock_in
+                        ? "Last clock in " + formatClock(d.clock_in)
+                        : "Not clocked in";
+                var location = (d.cameras && d.cameras.length)
+                    ? '<div class="card-location">📍 ' + d.cameras.join(" + ") + "</div>"
+                    : "";
+                card.innerHTML = '<div class="card-name">' + name + "</div>" +
+                    '<div class="card-status">' + status + "</div>" +
+                    '<div class="card-time">' + timeLabel + "</div>" +
+                    location;
+                container.appendChild(card);
+            });
+        }
+
+        function renderLogs(rows) {
+            var tbody = document.getElementById("history-body");
+            if (!rows || rows.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4">No sessions recorded yet.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = "";
+            rows.forEach(function (r) {
+                var tr = document.createElement("tr");
+                tr.innerHTML = "<td>" + r.doctor_name + "</td>" +
+                    "<td>" + formatClock(r.clock_in) + "</td>" +
+                    "<td>" + formatClock(r.clock_out) + "</td>" +
+                    "<td>" + formatDuration(r.duration_seconds) + "</td>";
+                tbody.appendChild(tr);
+            });
+        }
+
+        function refresh() {
+            fetch("/api/live_status")
+                .then(function (r) { return r.json(); })
+                .then(renderStatus)
+                .catch(function (e) { console.error(e); });
+
+            fetch("/api/logs")
+                .then(function (r) { return r.json(); })
+                .then(renderLogs)
+                .catch(function (e) { console.error(e); });
+        }
+
+        refresh();
+        setInterval(refresh, 5000);
+    </script>
+</body>
+</html>

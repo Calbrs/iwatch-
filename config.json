@@ -1,0 +1,94 @@
+{
+    "cameras": [
+        {
+            "id": "reception",
+            "label": "Reception (Webcam 0)",
+            "chair_zone_polygon": [
+                [
+                    100,
+                    100
+                ],
+                [
+                    540,
+                    100
+                ],
+                [
+                    540,
+                    400
+                ],
+                [
+                    100,
+                    400
+                ]
+            ],
+            "detection_confidence": 0.5,
+            "frame_skip": 2,
+            "source": 0
+        },
+        {
+            "id": "room2",
+            "label": "Room 2 (Webcam 1)",
+            "chair_zone_polygon": [
+                [
+                    100,
+                    100
+                ],
+                [
+                    540,
+                    100
+                ],
+                [
+                    540,
+                    400
+                ],
+                [
+                    100,
+                    400
+                ]
+            ],
+            "detection_confidence": 0.5,
+            "frame_skip": 2,
+            "source": 1
+        },
+        {
+            "id": "remote01",
+            "label": "Remote Camera",
+            "chair_zone_polygon": [
+                [
+                    0,
+                    0
+                ],
+                [
+                    640,
+                    0
+                ],
+                [
+                    640,
+                    480
+                ],
+                [
+                    0,
+                    480
+                ]
+            ],
+            "detection_confidence": 0.5,
+            "frame_skip": 2,
+            "source": {
+                "remote": true
+            }
+        }
+    ],
+    "enter_confirm_seconds": 2.0,
+    "exit_confirm_seconds": 3.0,
+    "appearance_match_threshold": 0.35,
+    "torso_crop_ratio": [
+        0.15,
+        0.65
+    ],
+    "tracking_window": 10,
+    "tracking_commit_frac": 0.5,
+    "tracking_release_frac": 0.3,
+    "tracking_start_gate": 4,
+    "tracking_max_lost": 10,
+    "detection_log_interval": 10.0
+}

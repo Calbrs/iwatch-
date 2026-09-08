@@ -1,0 +1,5 @@
+ultralytics>=8.2.0
+opencv-python>=4.9.0
+flask>=3.0.0
+numpy>=1.26.0
+simple-websocket>=1.0.0

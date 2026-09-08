@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camera Feeds</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <header>
+        <h1>Camera Feeds</h1>
+        <p class="subtitle">Live feeds from approved linked devices</p>
+        <nav>
+            <a class="btn" href="/">← Back to Dashboard</a>
+            <a class="btn" href="/devices">+ Link a Device Camera</a>
+            <a class="btn" href="/logs">Detection Log</a>
+        </nav>
+    </header>
+
+    <section id="preview">
+        <h2>Live Camera Feeds <span class="badge">LIVE</span></h2>
+        <div id="preview-grid" class="preview-grid">
+            <p class="loading">Loading cameras...</p>
+        </div>
+        <p class="preview-note">Only approved, connected feeds are shown. The green
+           badge marks a doctor being tracked. Frames are streamed live only — never
+           recorded or stored. To attach a camera, generate a link on the Device Camera
+           page, open it on the camera device, and approve it there.</p>
+    </section>
+
+    <script>
+        function renderCameras(cameras) {
+            var grid = document.getElementById("preview-grid");
+            var live = (cameras || []).filter(function (c) { return c.live; });
+            if (live.length === 0) {
+                grid.innerHTML = '<p class="loading">No live camera feeds connected yet.</p>';
+                return;
+            }
+            grid.innerHTML = "";
+            live.forEach(function (c) {
+                var panel = document.createElement("div");
+                panel.className = "preview-panel";
+                var label = document.createElement("div");
+                label.className = "preview-label";
+                label.textContent = c.label;
+                var img = document.createElement("img");
+                img.src = "/api/video_preview/" + encodeURIComponent(c.id);
+                img.alt = "Live preview " + c.label;
+                panel.appendChild(label);
+                panel.appendChild(img);
+                grid.appendChild(panel);
+            });
+        }
+
+        function refreshCameras() {
+            fetch("/api/cameras")
+                .then(function (r) { return r.json(); })
+                .then(renderCameras)
+                .catch(function (e) { console.error(e); });
+        }
+
+        refreshCameras();
+        setInterval(refreshCameras, 10000);
+    </script>
+</body>
+</html>

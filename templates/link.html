@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Link This Device's Camera</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <header>
+        <h1>Link This Camera</h1>
+        <p class="subtitle">Clinic Doctor Time Tracker — Cromemos Group Limited</p>
+    </header>
+
+    <section>
+        <h2>Linking code: <span id="code">{{ link_code }}</span></h2>
+        <p>Grant camera access below and this device streams its feed
+           to the tracker. The host then approves the camera for tracking.
+           Frames are used live only — nothing is recorded or stored.</p>
+
+        <div class="preview-wrap">
+            <video id="self-view" autoplay playsinline muted></video>
+        </div>
+
+        <div class="actions">
+            <button id="start" class="btn primary">Allow Camera &amp; Stream</button>
+        </div>
+        <p class="preview-note" id="cam-status">Waiting for permission...</p>
+    </section>
+
+    <section>
+        <h2>Status</h2>
+        <div id="status" class="status">Not streaming yet.</div>
+    </section>
+
+    <script>
+        var code = "{{ link_code }}";
+        var video = document.getElementById("self-view");
+        var canvas = document.createElement("canvas");
+        var ctx = canvas.getContext("2d");
+        var stream = null;
+        var ws = null;
+        var timer = null;
+        var framesSent = 0;
+        var streaming = false;
+        var invalid = false;
+        var statusEl = document.getElementById("status");
+        var camStatusEl = document.getElementById("cam-status");
+        var startBtn = document.getElementById("start");
+
+        function setStatus(text) { statusEl.textContent = text; }
+        function setCamStatus(text) { camStatusEl.textContent = text; }
+
+        function wsUrl() {
+            var proto = location.protocol === "https:" ? "wss" : "ws";
+            return proto + "://" + location.host + "/ws/cam/" + encodeURIComponent(code);
+        }
+
+        function checkLink() {
+            return fetch("/api/link/" + encodeURIComponent(code))
+                .then(function (r) { if (!r.ok) throw new Error("gone"); return r.json(); })
+                .then(function (d) { if (!d.ok) throw new Error("gone"); return d; })
+                .catch(function () { return null; });
+        }
+
+        function connect() {
+            if (invalid || !stream) return;
+            if (ws) { try { ws.close(); } catch (e) {} }
+            ws = new WebSocket(wsUrl());
+            ws.binaryType = "arraybuffer";
+            ws.onopen = function () {
+                streaming = true;
+                setStatus("Streaming — waiting for the host to approve this camera for tracking.");
+                startSending();
+            };
+            ws.onmessage = function (ev) {
+                if (typeof ev.data !== "string") return;
+                var msg;
+                try { msg = JSON.parse(ev.data); } catch (e) { return; }
+                if (msg.type === "active") {
+                    setStatus("Approved — streaming as camera " + msg.camera_id + ".");
+                } else if (msg.type === "error") {
+                    setStatus("Server said: " + (msg.message || "unknown error"));
+                }
+            };
+            ws.onclose = function () {
+                streaming = false;
+                if (timer) { clearInterval(timer); timer = null; }
+                checkLink().then(function (d) {
+                    if (d === null) {
+                        invalid = true;
+                        setStatus("This link is no longer valid.");
+                        setCamStatus("Camera is still available but cannot stream anymore.");
+                        return;
+                    }
+                    setStatus("Disconnected — retrying in 3 seconds...");
+                    setTimeout(connect, 3000);
+                });
+            };
+            ws.onerror = function () {
+                setStatus("Connection error — retrying...");
+            };
+        }
+
+        function startSending() {
+            sendFrame();
+        }
+
+        var baseWidth = 640;
+        var minWidth = 320;
+        var baseQuality = 0.6;
+        var minQuality = 0.35;
+        var targetFps = 30;
+        var sending = false;
+        var pendingSend = false;
+        var lastSendTime = 0;
+        var sendHistory = [];   // timestamps of recent sends for latency estimate
+        var busy = false;
+
+        function sendFrame() {
+            if (busy) { pendingSend = true; return; }
+            busy = true;
+            if (!ws || ws.readyState !== WebSocket.OPEN || !streaming || !video.videoWidth) {
+                busy = false;
+                scheduleNext();
+                return;
+            }
+
+            var now = performance.now();
+
+            // Estimate how long frames are taking end-to-end by sampling the
+            // interval between sends. If we fall well behind the target rate,
+            // shrink the frames so the stream stays smooth instead of lagging.
+            sendHistory.push(now);
+            var recent = sendHistory.filter(function (t) { return now - t < 3000; });
+            var adjust = 1;
+            var effectiveInterval = (recent.length > 1)
+                ? (now - recent[0]) / (recent.length - 1)
+                : (1000 / targetFps);
+            if (effectiveInterval > (1000 / (targetFps * 0.7))) {
+                adjust = (1000 / (targetFps * 0.7)) / effectiveInterval;
+            }
+            if (sendHistory.length > 120) sendHistory = recent;
+
+            var width = Math.round(Math.max(minWidth, baseWidth * adjust));
+            var height = Math.max(1, Math.round(video.videoHeight * width / video.videoWidth));
+            var quality = Math.max(minQuality, baseQuality * adjust);
+
+            if (canvas.width !== width) canvas.width = width;
+            if (canvas.height !== height) canvas.height = height;
+            ctx.drawImage(video, 0, 0, width, height);
+
+            canvas.toBlob(function (blob) {
+                busy = false;
+                try {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(blob);
+                        framesSent++;
+                        lastSendTime = performance.now();
+                        if (framesSent % 10 === 0) {
+                            var fps = Math.round(10000 / (performance.now() - now));
+                            setCamStatus("Streaming — frames sent: " + framesSent +
+                                "  res " + width + "p  q" + Math.round(quality * 100) +
+                                "  ~" + fps + " fps");
+                        }
+                    }
+                } catch (e) { /* socket closed mid-send */ }
+                scheduleNext();
+            }, "image/jpeg", quality);
+        }
+
+        function scheduleNext() {
+            if (pendingSend) { pendingSend = false; sendFrame(); return; }
+            requestAnimationFrame(sendFrame);
+        }
+
+        function allowCamera() {
+            if (startBtn.disabled) return;
+            startBtn.disabled = true;
+            setStatus("Requesting camera access...");
+            if (!window.isSecureContext) {
+                setStatus("Camera needs a secure (https) connection. Open this link via the "
+                          + "public HTTPS url, or on localhost.");
+                setCamStatus("Camera unavailable: insecure connection.");
+                startBtn.disabled = false;
+                return;
+            }
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                setStatus("Camera API is not available on this browser/connection.");
+                setCamStatus("Camera unavailable.");
+                startBtn.disabled = false;
+                return;
+            }
+            navigator.mediaDevices.getUserMedia({ audio: false, video: true })
+                .then(function (s) {
+                    stream = s;
+                    video.srcObject = s;
+                    return video.play().catch(function () {});
+                })
+                .then(function () {
+                    setCamStatus("Live preview — streaming automatically.");
+                    connect();
+                    setStatus("Camera granted — streaming. The host must approve this camera on the /devices page.");
+                })
+                .catch(function (e) {
+                    startBtn.disabled = false;
+                    setStatus("Camera access denied: " + (e.message || e.name || e));
+                });
+        }
+
+        startBtn.addEventListener("click", allowCamera);
+        allowCamera();
+    </script>
+</body>
+</html>

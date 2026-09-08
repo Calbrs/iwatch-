@@ -1,0 +1,13 @@
+__pycache__
+*.pyc
+*.h5
+*.hdf5
+*.hdf
+*.hdf5
+*.hdf
+*.hdf
+weights/*.h5
+data
+.git
+.gitignore
+README.md
