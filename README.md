@@ -276,6 +276,40 @@ No subdomain yet? A quick `cloudflared tunnel --url http://localhost:8080`
 prints a free `https://<random>.trycloudflare.com` for testing (URL changes on
 restart).
 
+**HTTPS without a tunnel — nginx + Let's Encrypt (what Sead-Annym runs):**
+With a domain already pointed (A record → box IP, ports 80/443 open in the OCI
+Security List), give nginx a vhost that reverse-proxies to the app (with
+WebSocket upgrade support) and let certbot issue the cert:
+
+```nginx
+# /etc/nginx/sites-available/iwatch.calbrs.com
+map $http_upgrade $connection_upgrade { default upgrade; '' close; }  # in conf.d/
+
+server {
+    listen 80;
+    server_name iwatch.calbrs.com;
+    proxy_buffering off;
+    proxy_read_timeout 3600s;
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+```bash
+sudo apt-get install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d iwatch.calbrs.com --agree-tos \
+  --register-unsafely-without-email --redirect --non-interactive
+```
+
+Result: `https://iwatch.calbrs.com` serves the app, HTTP auto-redirects to
+HTTPS, WebSockets work through nginx, and certbot auto-renews the cert.
+
 ### Local‑network tip (no cloud)
 If you prefer the absolute smoothest fps and have a local network, you can
 run the tracker directly on a spare laptop/PC, expose it via Cloudflare Tunnel
