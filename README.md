@@ -242,9 +242,9 @@ speed of Render's 0.1 CPU.
 1. Provision the instance (Compute → Create Instance → shape `A1.Flex`,
    Ubuntu 24.04 or Oracle Linux, download the SSH key). If "Out of capacity",
    retry in a different availability domain or take 1–2 OCPU first.
-2. In the OCI Console open **TCP 5000** in the VCN Security List
+2. In the OCI Console open **TCP 8080** in the VCN Security List
    (VCN → Public Subnet → Security List → Add Ingress Rule, source
-   `0.0.0.0/0`, port 5000). OCI blocks everything by default.
+   `0.0.0.0/0`, port 8080). OCI blocks everything by default.
 3. SSH from Windows: `ssh -i <key> ubuntu@<public-ip>` (Ubuntu) or `opc@`
    (Oracle Linux). If your key's permissions are rejected on Windows:
    `icacls <key> /inheritance:r /grant:r "$($env:USERNAME):R"`.
@@ -254,19 +254,27 @@ speed of Render's 0.1 CPU.
    ```
    It installs deps in a venv, opens the firewall, and registers a systemd
    service (`iwatch-tracker`) that auto-starts on boot and restarts on crash.
-5. Verify: `http://<public-ip>:5000`.
+   Default port is **8080**; override with `IWATCH_PORT=9090 bash deploy_oracle.sh`.
+5. Verify: `http://<public-ip>:8080`.
 
 **HTTPS for phones (required — browsers block camera access on plain HTTP):**
-- Easiest, no domain, free: a Cloudflare quick tunnel.
-  ```bash
-  curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 -o cloudflared \
-    && chmod +x cloudflared && sudo mv cloudflared /usr/local/bin/
-  cloudflared tunnel --url http://localhost:5000
-  ```
-  It prints `https://<random>.trycloudflare.com` — use that URL for the
-  dashboard and device links. Note: the URL changes on each restart.
-- Stable HTTPS with a domain: install Caddy (auto Let's-Encrypt) or a named
-  Cloudflare tunnel and point it at `http://localhost:5000`.
+Use **Cloudflare Tunnel** with a subdomain so you get a stable HTTPS URL:
+
+1. `cloudflare.com` → Zero Trust → Networks → Tunnels → Create a tunnel,
+   install the `cloudflared` daemon on the VM (ARM64 binary):
+   ```bash
+   curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 -o cloudflared \
+     && chmod +x cloudflared && sudo mv cloudflared /usr/local/bin/
+   ```
+2. In the tunnel config add a public hostname, e.g. `iwatch.yourdomain.com` →
+   service **HTTP**, URL **`http://localhost:8080`** (the same port the app
+   runs on).
+3. Your stable HTTPS dashboard/device URL is now
+   `https://iwatch.yourdomain.com` — Cloudflare terminates TLS for you.
+
+No subdomain yet? A quick `cloudflared tunnel --url http://localhost:8080`
+prints a free `https://<random>.trycloudflare.com` for testing (URL changes on
+restart).
 
 ### Local‑network tip (no cloud)
 If you prefer the absolute smoothest fps and have a local network, you can

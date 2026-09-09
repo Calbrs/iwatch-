@@ -5,8 +5,9 @@
 # Run (on the VM, after SSH):
 #   bash deploy_oracle.sh
 #
-# Result: a systemd service "iwatch-tracker" serving tracker.py on :5000.
-# NOTE: you must also open TCP 5000 in the OCI Security List
+# Result: a systemd service "iwatch-tracker" serving tracker.py on :8080.
+# Change the port with:  IWATCH_PORT=9090 bash deploy_oracle.sh
+# NOTE: you must also open that port in the OCI Security List
 # (VCN -> Public Subnet -> Security List -> Ingress Rule) or the port stays
 # unreachable from the internet even though the app runs.
 # HTTPS for phones (getUserMedia needs a secure context) is a separate step -
@@ -15,6 +16,7 @@ set -euo pipefail
 
 APP_DIR="$HOME/iwatch"
 REPO_URL="https://github.com/Calbrs/iwatch-"
+APP_PORT="${IWATCH_PORT:-8080}"
 
 echo "==> Detecting OS"
 if command -v apt-get >/dev/null 2>&1; then
@@ -46,14 +48,14 @@ python3 -m venv "$APP_DIR/.venv"
 "$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/requirements.txt"
 "$APP_DIR/.venv/bin/pip" install --upgrade opencv-python-headless
 
-echo "==> Open firewall port 5000 (still required: OCI Security List rule!)"
+echo "==> Open firewall port $APP_PORT (still required: OCI Security List rule!)"
 if command -v firewall-cmd >/dev/null 2>&1; then
-    sudo firewall-cmd --permanent --add-port=5000/tcp || true
+    sudo firewall-cmd --permanent --add-port=$APP_PORT/tcp || true
     sudo firewall-cmd --reload || true
 elif command -v ufw >/dev/null 2>&1; then
-    sudo ufw allow 5000/tcp || true
+    sudo ufw allow $APP_PORT/tcp || true
 fi
-sudo iptables -I INPUT -p tcp --dport 5000 -j ACCEPT 2>/dev/null || true
+sudo iptables -I INPUT -p tcp --dport $APP_PORT -j ACCEPT 2>/dev/null || true
 if command -v netfilter-persistent >/dev/null 2>&1; then
     sudo netfilter-persistent save || true
 fi
@@ -68,7 +70,7 @@ After=network.target
 User=$(id -un)
 WorkingDirectory=$APP_DIR
 ExecStart=$APP_DIR/.venv/bin/python tracker.py
-Environment=PORT=5000
+Environment=PORT=$APP_PORT
 Restart=always
 RestartSec=5
 
@@ -84,10 +86,11 @@ sudo systemctl status iwatch-tracker --no-pager || true
 
 echo ""
 echo "==> DONE. Tracker is running on:"
-echo "    http://$(hostname -I | awk '{print $1}'):5000"
+echo "    http://$(hostname -I | awk '{print $1}'):$APP_PORT"
 echo ""
-echo "    If 0.0.0.0:5000 shows here but the URL times out from outside, open"
-echo "    TCP 5000 in the OCI Security List (VCN -> Public Subnet -> Security"
-echo "    List -> Add Ingress Rule: source 0.0.0.0/0, port 5000)."
+echo "    If 0.0.0.0:$APP_PORT shows here but the URL times out from outside,"
+echo "    open TCP $APP_PORT in the OCI Security List (VCN -> Public Subnet ->"
+echo "    Security List -> Add Ingress Rule: source 0.0.0.0/0, port $APP_PORT)."
 echo ""
-echo "    Phones need HTTPS next (trycloudflare tunnel) - see the README."
+echo "    Cloudflare subdomain: named tunnel with service"
+echo "    http://localhost:$APP_PORT (HTTPS handled by Cloudflare) - README."
