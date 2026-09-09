@@ -53,7 +53,7 @@
         //   connected-waiting-approval   device connected, waiting for host
         //   accepted (+ handshake ok)    host approved, stream frames
         //   disconnected                 host stopped receiving frames
-        var POLL_MS = 30000;   // how often we check the registry status
+        var POLL_MS = 3000;   // how often we check the registry status
 
         var frameSeq = 0;       // monotonically increasing per captured frame
         var sendLog = [];       // [seq, captureMs, sendMs, width, quality] ring
@@ -137,22 +137,34 @@
                 return;
             }
             if (cs === "accepted") {
+                if (!stream) {
+                    approved = false;
+                    setStatus("Approved by the host — grant camera access to start streaming.");
+                    setCamStatus("Waiting for camera access...");
+                    return;
+                }
+                approveAndStream();
                 if (d.handshake === "ok" && d.camera_id) {
                     setStatus("Approved — streaming live as camera " + d.camera_id + ".");
                     setCamStatus("Live preview — streaming at full speed.");
                 } else {
                     setStatus("Approved — starting the stream...");
+                    setCamStatus("Live preview — streaming.");
                 }
-                approveAndStream();
                 return;
             }
             if (cs === "connected-waiting-approval") {
-                setStatus("Connected — waiting for the host to approve this camera on /devices.");
-                setCamStatus("Live preview — waiting for host approval before streaming.");
+                if (!stream) {
+                    setStatus("The host sees this device — grant camera access to connect and stream.");
+                    setCamStatus("Waiting for camera access...");
+                } else {
+                    setStatus("Connected — waiting for the host to approve this camera on /devices.");
+                    setCamStatus("Live preview — waiting for host approval before streaming.");
+                }
                 return;
             }
             setStatus("Waiting for the host to approve this link.");
-            setCamStatus("Live preview — waiting.");
+            setCamStatus(stream ? "Live preview — waiting." : "Waiting for camera access...");
         }
 
         function approveAndStream() {
@@ -289,9 +301,7 @@
                     return video.play().catch(function () {});
                 })
                 .then(function () {
-                    setCamStatus("Live preview — waiting for host approval before streaming.");
                     connect();
-                    startPolling();
                 })
                 .catch(function (e) {
                     setStatus("Camera access denied: " + (e.message || e.name || e)
@@ -306,6 +316,9 @@
             if (!stream) allowCamera();
         });
 
+        // Poll the registry right away — even before the camera is granted —
+        // so the status reflects host approvals/new requests within 3s.
+        startPolling();
         allowCamera();
     </script>
 </body>
