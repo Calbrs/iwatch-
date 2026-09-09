@@ -372,6 +372,7 @@ def camera_loop(cam, stop_event):
     presence_filter = PresenceFilter(min_hits=2, max_misses=3)
     current_badges = {}
     frame_count = 0
+    det_errors = 0
 
     consecutive_errors = 0
     while not stop_event.is_set():
@@ -385,70 +386,80 @@ def camera_loop(cam, stop_event):
             frame_count += 1
 
             if frame_count % frame_skip == 0:
-                results = None
-                with inference_lock:
-                    results = MODEL.predict(frame, conf=confidence, verbose=False)
-                persons = [r for r in results[0].boxes if int(r.cls) == 0]
+                try:
+                    results = None
+                    with inference_lock:
+                        results = MODEL.predict(frame, conf=confidence, verbose=False)
+                    persons = [r for r in results[0].boxes if int(r.cls) == 0]
 
-                with profile_lock:
-                    profs = PROFILES
+                    with profile_lock:
+                        profs = PROFILES
 
-                # Link frames into persistent tracklets first, so the boxes the
-                # identities run on are stable across time and do not jump.
-                active = tracker.update([b.xyxy[0].cpu().numpy() for b in persons])
+                    # Link frames into persistent tracklets first, so the boxes the
+                    # identities run on are stable across time and do not jump.
+                    active = tracker.update([b.xyxy[0].cpu().numpy() for b in persons])
 
-                in_zone_names = set()
-                for t in active:
-                    cx, cy = t.centroid
-                    if not point_in_polygon((cx, cy), polygon):
-                        continue
-                    hist = compute_torso_histogram(frame, t.box, CONFIG)
-                    candidates = (match_profile_candidates(hist, profs, top_k=3)
-                                  if hist is not None else [])
-                    name = t.identity.observe(candidates)
-                    if name:
-                        in_zone_names.add(name)
+                    in_zone_names = set()
+                    for t in active:
+                        cx, cy = t.centroid
+                        if not point_in_polygon((cx, cy), polygon):
+                            continue
+                        hist = compute_torso_histogram(frame, t.box, CONFIG)
+                        candidates = (match_profile_candidates(hist, profs, top_k=3)
+                                      if hist is not None else [])
+                        name = t.identity.observe(candidates)
+                        if name:
+                            in_zone_names.add(name)
 
-                # Presence is only confirmed after consecutive votes, so the
-                # green badge below does not flicker on single missed frames.
-                presence = presence_filter.update(in_zone_names)
-                publish_presence(camera_id, presence)
+                    # Presence is only confirmed after consecutive votes, so the
+                    # green badge below does not flicker on single missed frames.
+                    presence = presence_filter.update(in_zone_names)
+                    publish_presence(camera_id, presence)
 
-                # Badge boxes come from smooth tracklets and persist through
-                # the short debounce window above even if a frame is dropped.
-                current_badges = {
-                    t.identity.name: t.box
-                    for t in tracker.tracks.values()
-                    if t.identity.name in presence
-                }
+                    # Badge boxes come from smooth tracklets and persist through
+                    # the short debounce window above even if a frame is dropped.
+                    current_badges = {
+                        t.identity.name: t.box
+                        for t in tracker.tracks.values()
+                        if t.identity.name in presence
+                    }
 
-                # Web self-enrollment: when a job targets this camera, collect
-                # samples whenever exactly one stable person can be tracked.
-                # Frames used here are still live-only, never persisted.
-                with enroll_lock:
-                    job = enroll_jobs.get(camera_id)
+                    # Web self-enrollment: when a job targets this camera, collect
+                    # samples whenever exactly one stable person can be tracked.
+                    # Frames used here are still live-only, never persisted.
+                    with enroll_lock:
+                        job = enroll_jobs.get(camera_id)
 
-                if job is not None and job["status"] == "collecting":
-                    if len(active) == 1 and active[0].matched >= 2:
-                        box = active[0].box
-                        hist = compute_torso_histogram(frame, box, CONFIG)
-                        if hist is not None:
-                            job["collected"].append(hist)
-                            job["progress"] = len(job["collected"])
-                            if job["progress"] >= job["frames_needed"]:
-                                with enroll_lock:
-                                    job["status"] = "finalizing"
-                                finalize_enrollment(job)
-                            else:
-                                job["message"] = (
-                                    f"Collected {job['progress']}/{job['frames_needed']}"
-                                )
-                    elif len(active) > 1:
-                        job["message"] = ("More than one person detected — only "
-                                          "the doctor should be in view.")
-                    else:
-                        job["message"] = ("No person detected — stand in view "
-                                          "of the camera.")
+                    if job is not None and job["status"] == "collecting":
+                        if len(active) == 1 and active[0].matched >= 2:
+                            box = active[0].box
+                            hist = compute_torso_histogram(frame, box, CONFIG)
+                            if hist is not None:
+                                job["collected"].append(hist)
+                                job["progress"] = len(job["collected"])
+                                if job["progress"] >= job["frames_needed"]:
+                                    with enroll_lock:
+                                        job["status"] = "finalizing"
+                                    finalize_enrollment(job)
+                                else:
+                                    job["message"] = (
+                                        f"Collected {job['progress']}/{job['frames_needed']}"
+                                    )
+                        elif len(active) > 1:
+                            job["message"] = ("More than one person detected — only "
+                                              "the doctor should be in view.")
+                        else:
+                            job["message"] = ("No person detected — stand in view "
+                                              "of the camera.")
+                except Exception as exc:
+                    # Detection/pipeline failure must NEVER freeze the live
+                    # preview: keep the frame flowing so the feed stays live
+                    # even if YOLO (or its compiled ops) is misbehaving.
+                    det_errors += 1
+                    if det_errors <= 3 or det_errors % 100 == 0:
+                        print(f"ERROR camera '{camera_id}' detection: {exc}")
+                        traceback.print_exc()
+                    time.sleep(0.02)
             else:
                 time.sleep(0.01)
 
