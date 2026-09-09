@@ -39,6 +39,9 @@ $depsOk = & python -c "import ultralytics, cv2, flask, numpy; print('ok')" 2>$nu
 if ($LASTEXITCODE -ne 0 -or "$depsOk".Trim() -ne 'ok') {
     Write-Host "Installing dependencies..."
     & python -m pip install -r requirements.txt
+    # ultralytics installs opencv-python (GUI build); re-install headless on
+    # top so the cv2 module used is the headless build (no X11/GTK needed).
+    & python -m pip install --upgrade opencv-python-headless
 }
 
 # ---------- 2. Start tracker in THIS console (live output) ----------

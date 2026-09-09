@@ -1,5 +1,7 @@
+# Headless OpenCV (no GUI/X11) - required for Docker/cloud builds. Works on
+# Windows too; this app never opens a cv2 window, only streams to a browser.
 ultralytics>=8.2.0
-opencv-python>=4.9.0
+opencv-python-headless>=4.9.0
 flask>=3.0.0
 numpy>=1.26.0
 simple-websocket>=1.0.0
