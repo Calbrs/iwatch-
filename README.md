@@ -322,5 +322,27 @@ the 512 MB RAM ceiling and gives you full GPU access if available.
 - `CLOUD_DETECTION_CONFIDENCE` – e.g. `0.4` lowers the YOLO threshold, more
   detections but more CPU load.
 - `CLOUD_PREVIEW_QUALITY` – e.g. `0.5` reduces MJPEG encode cost.
+- `PREVIEW_FPS` – e.g. `24` caps the live MJPEG preview at 24 frames/sec (the
+  receiver's playback pace). Frames arriving faster are dropped, never queued,
+  so the feed stays live instead of accumulating delay.
+- `STREAM_LOG` – `1` (default) writes remote-stream telemetry to
+  `stream.log.jsonl`; set `0` to disable. `STREAM_LOG_PATH` overrides the file.
+- `STREAM_LOG` format (`evt`):
+  - `recv` – every frame received on the server (server clock, byte size).
+  - `send_side` – the phone's per-second send log batch (phone clock, per-frame
+    seq + capture/send ms), delivered over the same WebSocket as text.
+  - `recv_summary` – rolling receive fps printed every 300 frames.
+  - `ws_open` / `ws_close` – connection events.
+
+### Diagnosing remote-camera streaming (fps / lag)
+Have the phone stream, then while it is running:
+1. Give it ~30 seconds to accumulate data.
+2. Summarize:  `python stream_analyze.py stream.log.jsonl`
+   It prints SEND fps (phone), RECV fps (server), the recv/sent ratio and the
+   per-frame capture‑→‑send gap. Sustained SEND > RECV over the same wall‑clock
+   second is where lag is created — tune `PREVIEW_FPS` / `CLOUD_PREVIEW_QUALITY`
+   or the phone's adaptive quality accordingly.
+3. Tip: also watch the server console, which logs
+   `STREAM RECV <CODE>: N frames, xx.x fps` every 300 frames.
 
 ---

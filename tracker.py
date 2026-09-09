@@ -72,6 +72,33 @@ preview_versions = {}
 
 LIVE_AFTER_SECONDS = 4.0
 
+# --- Remote-stream telemetry logging ---------------------------------------
+# Every frame the linked phone SENDS and every frame the server RECEIVES is
+# appended (with timestamps) to a JSONL file so the two sides can be compared:
+#   evt=t              single-frame / session event with arbitrary fields
+#   evt=recv           a frame arrived at the server (server clock)
+#   evt=send_side      the phone's own send log batch for the last second
+#                      (phone clock, ms since page load) with its seq numbers
+#   evt=recv_summary   rolling receive rate printed every 10 s
+# Set STREAM_LOG=0 to disable (writes are tiny: ~1 line per frame ~60 B).
+STREAM_LOG = os.environ.get("STREAM_LOG", "1").strip().lower() not in ("0", "false", "no", "off")
+STREAM_LOG_PATH = os.path.join(BASE_DIR, os.environ.get("STREAM_LOG_PATH", "stream.log.jsonl"))
+_stream_log_lock = threading.Lock()
+_stream_codes = {}
+
+
+def _log_stream(evt, **kwargs):
+    if not STREAM_LOG:
+        return
+    rec = {"evt": evt, "t": round(time.time(), 4)}
+    rec.update(kwargs)
+    try:
+        with _stream_log_lock:
+            with open(STREAM_LOG_PATH, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
+
 enroll_lock = threading.Lock()
 enroll_jobs = {}
 
@@ -921,6 +948,7 @@ def ws_cam(code):
                 link["status"] = "awaiting_confirm"
                 _persist_links()
         print(f"WS CONNECTED: <{code}> streaming, waiting for host approval...")
+        _log_stream("ws_open", code=code)
 
         while True:
             try:
@@ -934,8 +962,28 @@ def ws_cam(code):
             if data is None:
                 break
 
+            if isinstance(data, str):
+                try:
+                    msg = json.loads(data)
+                except Exception:
+                    continue
+                if msg.get("type") == "telemetry":
+                    _log_stream("send_side", code=code, data=msg)
+                continue
             if not isinstance(data, (bytes, bytearray)):
                 continue
+
+            st = _stream_codes.setdefault(code, {"recv": 0, "t0": time.time()})
+            st["recv"] += 1
+            _log_stream("recv", code=code, n=st["recv"], size=len(data))
+            if st["recv"] % 300 == 0:
+                fps = st["recv"] / max(1e-6, time.time() - st["t0"])
+                print(f"STREAM RECV <{code}>: {st['recv']} frames, "
+                      f"{fps:.1f} fps since start")
+                _log_stream("recv_summary", code=code, total=st["recv"],
+                            elapsed_s=round(time.time() - st["t0"], 3),
+                            fps=round(fps, 2))
+
             arr = np.frombuffer(data, dtype=np.uint8)
             img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
             if img is None:
@@ -976,6 +1024,7 @@ def ws_cam(code):
                 if not link.get("camera_id") and link["status"] != "pending":
                     link["status"] = "pending"
                     _persist_links()
+    _log_stream("ws_close", code=code)
     return ""
 
 

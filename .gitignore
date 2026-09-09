@@ -11,6 +11,8 @@ links.json
 
 # Local logs
 *.log
+stream.log.jsonl
+stream.test.jsonl
 
 # OS / editor
 .DS_Store

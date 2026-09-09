@@ -48,6 +48,10 @@
         var camStatusEl = document.getElementById("cam-status");
         var startBtn = document.getElementById("start");
 
+        var frameSeq = 0;       // monotonically increasing per captured frame
+        var sendLog = [];       // [seq, captureMs, sendMs, width, quality] ring
+        var lastTelemMs = 0;    // last time we shipped a telemetry batch
+
         function setStatus(text) { statusEl.textContent = text; }
         function setCamStatus(text) { camStatusEl.textContent = text; }
 
@@ -127,6 +131,8 @@
             }
 
             var now = performance.now();
+            var captureMs = now;
+            var thisSeq = ++frameSeq;
 
             // Estimate how long frames are taking end-to-end by sampling the
             // interval between sends. If we fall well behind the target rate,
@@ -157,16 +163,35 @@
                         ws.send(blob);
                         framesSent++;
                         lastSendTime = performance.now();
+                        sendLog.push([thisSeq, captureMs, performance.now(),
+                                      width, Math.round(quality * 100)]);
+                        if (sendLog.length > 900) sendLog.shift();
                         if (framesSent % 10 === 0) {
                             var fps = Math.round(10000 / (performance.now() - now));
                             setCamStatus("Streaming — frames sent: " + framesSent +
                                 "  res " + width + "p  q" + Math.round(quality * 100) +
                                 "  ~" + fps + " fps");
                         }
+                        flushTelemetry();
                     }
                 } catch (e) { /* socket closed mid-send */ }
                 scheduleNext();
             }, "image/jpeg", quality);
+        }
+
+        function flushTelemetry() {
+            var t = performance.now();
+            if (t - lastTelemMs < 1000) return;
+            lastTelemMs = t;
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            var batch = sendLog.slice(-80);   // last ~2.5s, enough for gap analysis
+            ws.send(JSON.stringify({
+                type: "telemetry",
+                seq: frameSeq,
+                t: t,
+                sentTotal: framesSent,
+                batch: batch
+            }));
         }
 
         function scheduleNext() {
