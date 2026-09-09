@@ -439,6 +439,13 @@ def camera_loop(cam, stop_event):
                         results = MODEL.predict(frame, conf=confidence, verbose=False)
                     persons = [r for r in results[0].boxes if int(r.cls) == 0]
 
+                    # DEBUG: save first frame every 1000 frames for inspection
+                    if frame_count % 1000 == 1:
+                        import os
+                        os.makedirs("/tmp/debug_frames", exist_ok=True)
+                        cv2.imwrite(f"/tmp/debug_frames/{camera_id}_frame{frame_count}.jpg", frame)
+                        print(f"DEBUG saved frame {camera_id}_frame{frame_count}.jpg shape={frame.shape}")
+
                     with profile_lock:
                         profs = PROFILES
 
