@@ -350,6 +350,7 @@ def camera_loop(cam, stop_event):
     """
     camera_id = cam["id"]
     polygon = np.array(cam["chair_zone_polygon"], dtype=np.int32)
+    zone_reflected = False
     frame_skip = cam["frame_skip"]
     confidence = cam["detection_confidence"]
 
@@ -384,6 +385,13 @@ def camera_loop(cam, stop_event):
                 continue
 
             frame_count += 1
+
+            # Remote frames were flipped at the source (front camera is a
+            # mirror of reality). Reflect the configured chair zone along x so
+            # it still lines up with the physical chairs in the mirrored view.
+            if cam.get("remote") and not zone_reflected:
+                polygon[:, 0] = frame.shape[1] - polygon[:, 0]
+                zone_reflected = True
 
             # Redraw badges from the last detection round, then publish the
             # frame IMMEDIATELY. Detection (YOLO) is the slowest step on the
@@ -1005,6 +1013,14 @@ def ws_cam(code):
             img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
             if img is None:
                 continue
+
+            # A phone's front camera records a mirror of reality: raise your
+            # right hand and it appears on the LEFT of the raw image. Flip
+            # once at the source so the preview (feeds / enroll) and tracking
+            # frames show the world as the person facing the camera sees it
+            # (right hand on the right). Badges drawn later stay readable and
+            # enrollment histograms match detection frames.
+            img = cv2.flip(img, 1)
 
             cam_id = None
             with link_lock:

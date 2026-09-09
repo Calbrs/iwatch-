@@ -170,6 +170,10 @@ nav {
     display: block;
     max-width: 640px;
     max-height: 360px;
+    /* The raw front-camera image is a mirror of reality; the mirrored stream
+       the receiver sees matches how a person looks at themselves, and this
+       selfie mirror keeps the phone's own preview identical to that view. */
+    transform: scaleX(-1);
 }
 
 .preview-label {
