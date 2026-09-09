@@ -1,3 +1,14 @@
+---
+title: Clinic Doctor Time Tracker
+emoji: 🕒
+colorFrom: green
+colorTo: blue
+sdk: docker
+app_port: 7860
+pinned: false
+license: mit
+---
+
 # Clinic Doctor Time Tracker
 
 A system that tracks how much time a doctor spends at the treatment chair
@@ -186,26 +197,42 @@ are numeric arrays only and cannot be reconstructed into an image of a person.
 
 ## Deploying to the Cloud (Render or Hugging Face)
 
-### Render (free tier)
-1. Push this repo to GitHub.
-2. In the Render Dashboard, click **New Web Service → Docker**.
-3. Set the Dockerfile path to `Dockerfile` and the plan to **Free**.
-4. Render will auto‑set the `PORT` environment variable; our `tracker.py`
-   already reads `int(os.environ.get("PORT", 5000))`.
-5. Render free: 512 MB RAM / 0.1 CPU. YOLOv8n runs on CPU only; fps will be
-   lower than on a local GPU but the WebSocket path is direct (no ngrok tunnel),
-   which often feels smoother in practice. The service spins down after 15 min of
-   idle (new behavior: stays active while receiving WebSocket messages). First
-   request after a spin‑down triggers a cold‑start (~1 min).
+The same repo works on **both** platforms — `tracker.py` reads the `PORT`
+env var, and the `Dockerfile` is the single build definition.
 
-### Hugging Face Spaces
-- **Docker Spaces** require a paid **PRO** plan to create. The free tier only
-  supports Gradio “ZeroGPU” spaces (limited to 2 per account). If you have a
-  PRO account, create a Docker Space, set `sdk: docker` in the `README.md`
-  YAML block, and copy the `Dockerfile` + `requirements.txt` into the repo root.
-- **Free alternative**: Use a Gradio ZeroGPU Space (no Docker) – this would
-  require rewriting the streaming pipeline to Gradio’s built‑in WebSocket, which
-  is beyond the scope of this Flask app.
+### Option A — Render (free tier, recommended)
+1. Push this repo to GitHub (already done: `https://github.com/Calbrs/iwatch-`).
+2. Render Dashboard → **New** → **Web Service** → choose **Docker** as the environment.
+3. Connect the GitHub repo, set **Dockerfile path** to `Dockerfile`, plan **Free**.
+4. Render auto‑sets `PORT`; our app binds it via `int(os.environ.get("PORT", 5000))`.
+5. Add optional env vars (`CLOUD_FRAME_SKIP` etc.) under **Advanced**.
+6. Deploy. The public URL (`https://<service>.onrender.com`) is the URL you
+   open, generate device links, and hand to phones.
+
+Constraints: 512 MB RAM / 0.1 CPU. YOLOv8n runs on CPU; the direct WebSocket
+path (no ngrok) feels smooth. The free instance spins down after 15 min idle
+(also spins up again on the next request — ~1 min cold start).
+
+### Option B — Hugging Face Spaces (Docker, requires PRO to create)
+HF reads the `sdk: docker` YAML at the top of this `README.md` and runs the
+`Dockerfile`. It sets `PORT=7860` for you (`app_port: 7860` in the YAML).
+
+1. Create a Space at `https://huggingface.co/new-space` — name it e.g.
+   `clinic-time-tracker`, hardware **CPU basic**, SDK **Docker**.
+2. Push the repo contents to the Space repo:
+   ```bash
+   git clone https://huggingface.co/spaces/<user>/clinic-time-tracker
+   # copy this repo's files into that folder, then:
+   cd clinic-time-tracker
+   git add . && git commit -m "initial" && git push
+   ```
+3. HF builds the Docker image and starts the app. Your URL becomes
+   `https://<user>-clinic-time-tracker.hf.space`.
+
+Note: **free HF accounts cannot create Docker Spaces** — that costs a PRO
+plan. The only free HF compute is Gradio “ZeroGPU” ($0/hr but limited to 2
+spaces and requires a Gradio app, not Flask). If you don’t have PRO, use
+Render Option A.
 
 ### Local‑network tip (no cloud)
 If you prefer the absolute smoothest fps and have a local network, you can

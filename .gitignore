@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Runtime state (auto-created on every start)
+logs.db
+links.json
+
+# Local logs / tunnels
+*.log
+public_url.txt
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
