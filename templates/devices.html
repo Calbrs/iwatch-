@@ -82,15 +82,24 @@
                     tbody.innerHTML = "";
                     links.forEach(function (lk) {
                         var tr = document.createElement("tr");
+                        var cs = lk.connection_status || "pending";
                         var status = "";
                         var action = "";
-                        if (lk.status === "active") {
-                            status = '<span class="pill live">Active (' + (lk.camera_id || "") + ')</span>';
-                            action = "";
-                        } else if (lk.status === "awaiting_confirm") {
-                            status = '<span class="pill">Streaming — awaiting approval</span>';
+                        if (cs === "accepted") {
+                            status = '<span class="pill live">Accepted — tracking (' +
+                                (lk.camera_id || "") + ")</span>";
+                            action =
+                                '<button class="btn disconnect-link" data-code="' + lk.code + '">Disconnect</button> ' +
+                                '<button class="btn discard-link" data-code="' + lk.code + '">Discard</button>';
+                        } else if (cs === "connected-waiting-approval") {
+                            status = '<span class="pill">Connected — awaiting approval</span>';
                             action =
                                 '<button class="btn primary approve-link" data-code="' + lk.code + '">Approve</button> ' +
+                                '<button class="btn discard-link" data-code="' + lk.code + '">Discard</button>';
+                        } else if (cs === "disconnected") {
+                            status = '<span class="pill">Disconnected (stopped receiving)</span>';
+                            action =
+                                '<button class="btn primary approve-link" data-code="' + lk.code + '">Re-approve</button> ' +
                                 '<button class="btn discard-link" data-code="' + lk.code + '">Discard</button>';
                         } else {
                             status = '<span class="pill">Link created</span>';
@@ -156,14 +165,16 @@
                             s.textContent = "This link is no longer valid.";
                             return;
                         }
-                        if (d.status === "active") {
+                        if (d.connection_status === "accepted") {
                             clearInterval(timer);
                             s.textContent = "Device approved — receiving " +
                                 d.frames + " frames so far. See the cameras table below.";
                             loadDevices();
                             loadLinks();
-                        } else if (d.status === "awaiting_confirm") {
-                            s.textContent = "Device is streaming — approve it on this page below to use it for tracking.";
+                        } else if (d.connection_status === "connected-waiting-approval") {
+                            s.textContent = "Device is connected — approve it on this page below to use it for tracking.";
+                        } else if (d.connection_status === "disconnected") {
+                            s.textContent = "Device was disconnected by the host. Re-approve it to start receiving again.";
                         } else {
                             s.textContent = "Share this link with the device, then approve it here.";
                         }
@@ -218,6 +229,20 @@
                 btn.disabled = true;
                 btn.textContent = "Approving...";
                 fetch("/api/link/" + btn.dataset.code + "/confirm", { method: "POST" })
+                    .then(function (r) { return r.json(); })
+                    .then(function (d) { if (!d.ok) alert(d.message); })
+                    .catch(function () {})
+                    .then(function () { loadLinks(); loadDevices(); });
+                return;
+            }
+            var dc = e.target.closest(".disconnect-link");
+            if (dc) {
+                if (!confirm("Disconnect this camera?\nThe tracker will stop receiving its frames until you approve it again.")) {
+                    return;
+                }
+                dc.disabled = true;
+                dc.textContent = "Disconnecting...";
+                fetch("/api/link/" + dc.dataset.code + "/disconnect", { method: "POST" })
                     .then(function (r) { return r.json(); })
                     .then(function (d) { if (!d.ok) alert(d.message); })
                     .catch(function () {})

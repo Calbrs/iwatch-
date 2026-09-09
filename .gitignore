@@ -8,6 +8,7 @@ venv/
 # Runtime state (auto-created on every start)
 logs.db
 links.json
+register.json
 
 # Local logs
 *.log

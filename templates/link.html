@@ -40,13 +40,20 @@
         var stream = null;
         var ws = null;
         var timer = null;
-        var retryTimer = null;
+        var pollTimer = null;
         var framesSent = 0;
         var streaming = false;
         var approved = false;
         var invalid = false;
         var statusEl = document.getElementById("status");
         var camStatusEl = document.getElementById("cam-status");
+
+        // The register.json connection states as seen by the feeder:
+        //   pending                      link created, nothing to do yet
+        //   connected-waiting-approval   device connected, waiting for host
+        //   accepted (+ handshake ok)    host approved, stream frames
+        //   disconnected                 host stopped receiving frames
+        var POLL_MS = 30000;   // how often we check the registry status
 
         var frameSeq = 0;       // monotonically increasing per captured frame
         var sendLog = [];       // [seq, captureMs, sendMs, width, quality] ring
@@ -60,20 +67,18 @@
             return proto + "://" + location.host + "/ws/cam/" + encodeURIComponent(code);
         }
 
-        function checkLink() {
-            return fetch("/api/link/" + encodeURIComponent(code))
-                .then(function (r) { if (!r.ok) throw new Error("gone"); return r.json(); })
-                .then(function (d) { if (!d.ok) throw new Error("gone"); return d; })
-                .catch(function () { return null; });
-        }
-
         function connect() {
             if (invalid || !stream) return;
-            if (ws) { try { ws.close(); } catch (e) {} }
+            if (ws) {
+                var st = ws.readyState;
+                if (st === WebSocket.OPEN || st === WebSocket.CONNECTING) return;
+                try { ws.close(); } catch (e) {}
+            }
+            // One handshake at a time. There is no 3s retry storm: if this
+            // fails, the 30s registry poll below decides when to try again.
             ws = new WebSocket(wsUrl());
             ws.binaryType = "arraybuffer";
             ws.onopen = function () {
-                if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
                 setStatus("Connected — waiting for the host to approve this camera for tracking...");
                 setCamStatus("Live preview — waiting for host approval before streaming.");
             };
@@ -95,24 +100,79 @@
                 streaming = false;
                 approved = false;
                 if (timer) { clearInterval(timer); timer = null; }
-                if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
-                checkLink().then(function (d) {
-                    if (d === null) {
+                ws = null;
+                // Do not hammer the server. The 30s registry poll owns
+                // reconnection decisions.
+                setStatus("Connection closed — checking status...");
+                pollStatus();
+            };
+            ws.onerror = function () { /* onclose follows */ };
+        }
+
+        function pollStatus() {
+            fetch("/api/link/" + encodeURIComponent(code))
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                    if (!d.ok || !d.connection_status) {
                         invalid = true;
                         setStatus("This link is no longer valid.");
                         setCamStatus("Camera is still available but cannot stream anymore.");
                         return;
                     }
-                    // One quiet handshake at a time: wait 30 s before trying
-                    // again so a slow/disrupted connection is never cancelled
-                    // by an overlapping retry.
-                    setStatus("Disconnected — retrying in 30 seconds...");
-                    retryTimer = setTimeout(connect, 30000);
-                });
-            };
-            ws.onerror = function () {
-                setStatus("Connection error — retrying...");
-            };
+                    applyRegistry(d);
+                })
+                .catch(function () {});
+        }
+
+        function applyRegistry(d) {
+            var cs = d.connection_status;
+            if (cs === "disconnected") {
+                streaming = false;
+                approved = false;
+                if (timer) { clearInterval(timer); timer = null; }
+                if (ws) { try { ws.close(); } catch (e) {} }
+                ws = null;
+                setStatus("Disconnected by the host — the tracker is not receiving frames from this camera.");
+                setCamStatus("Live preview only. Ask the host to re-approve this camera.");
+                return;
+            }
+            if (cs === "accepted") {
+                if (d.handshake === "ok" && d.camera_id) {
+                    setStatus("Approved — streaming live as camera " + d.camera_id + ".");
+                    setCamStatus("Live preview — streaming at full speed.");
+                } else {
+                    setStatus("Approved — starting the stream...");
+                }
+                approveAndStream();
+                return;
+            }
+            if (cs === "connected-waiting-approval") {
+                setStatus("Connected — waiting for the host to approve this camera on /devices.");
+                setCamStatus("Live preview — waiting for host approval before streaming.");
+                return;
+            }
+            setStatus("Waiting for the host to approve this link.");
+            setCamStatus("Live preview — waiting.");
+        }
+
+        function approveAndStream() {
+            // The registry says this camera was accepted. Either the socket is
+            // already up (begin sending now) or we need a fresh handshake.
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                if (!approved) {
+                    approved = true;
+                    streaming = true;
+                    startSending();
+                }
+            } else {
+                connect();
+            }
+        }
+
+        function startPolling() {
+            clearInterval(pollTimer);
+            pollTimer = setInterval(pollStatus, POLL_MS);
+            pollStatus();
         }
 
         function startSending() {
@@ -230,8 +290,8 @@
                 })
                 .then(function () {
                     setCamStatus("Live preview — waiting for host approval before streaming.");
-                    setStatus("Camera granted — waiting for the host to approve this camera on /devices.");
                     connect();
+                    startPolling();
                 })
                 .catch(function (e) {
                     setStatus("Camera access denied: " + (e.message || e.name || e)

@@ -92,6 +92,12 @@
                     '<div class="card-status">' + status + "</div>" +
                     '<div class="card-time">' + timeLabel + "</div>" +
                     location;
+                var rmBtn = document.createElement("button");
+                rmBtn.className = "btn remove doctor-remove";
+                rmBtn.textContent = "Remove account";
+                rmBtn.title = "Delete this doctor's account and appearance profile";
+                rmBtn.dataset.name = name;
+                card.appendChild(rmBtn);
                 container.appendChild(card);
             });
         }
@@ -124,6 +130,28 @@
                 .then(renderLogs)
                 .catch(function (e) { console.error(e); });
         }
+
+        document.addEventListener("click", function (e) {
+            var btn = e.target.closest(".doctor-remove");
+            if (!btn) return;
+            var name = btn.dataset.name;
+            if (!confirm("Remove this doctor's account?\nThis deletes their appearance profile and stops tracking them. This cannot be undone.")) {
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = "Removing...";
+            fetch("/api/doctors/delete", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name: name })
+            })
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                    if (!d.ok) { alert(d.message); return; }
+                    refresh();
+                })
+                .catch(function (e) { console.error(e); });
+        });
 
         refresh();
         setInterval(refresh, 5000);

@@ -45,6 +45,7 @@ PROFILES_DIR = os.path.join(BASE_DIR, "profiles")
 DB_PATH = os.path.join(BASE_DIR, "logs.db")
 SCHEMA_PATH = os.path.join(BASE_DIR, "db_schema.sql")
 LINKS_PATH = os.path.join(BASE_DIR, "links.json")
+REGISTER_PATH = os.path.join(BASE_DIR, "register.json")
 
 app = Flask(__name__, template_folder=os.path.join(BASE_DIR, "templates"),
             static_folder=os.path.join(BASE_DIR, "static"))
@@ -117,52 +118,74 @@ link_store = {}
 
 
 def _persist_links():
-    """Save device links to disk so they survive a tracker restart.
+    """Save the connection registry to register.json — the durable database
+    for feeder connections.
 
     Runtime-only fields (the live websocket, camera id, frame counts) are
-    intentionally not saved; they are reset on every boot.
+    intentionally not saved; they reset on every boot. Each entry records:
+      code / sharing_id   - the sharing code
+      name                - the camera name the host chose
+      timestamp           - when the link was created
+      handshake           - null (no frames yet) or "ok" (frames flowing)
+      connection_status   - pending (created) | connected-waiting-approval |
+                            accepted (host approved) | disconnected (host stopped)
     """
     try:
-        with open(LINKS_PATH, "w", encoding="utf-8") as f:
+        with open(REGISTER_PATH, "w", encoding="utf-8") as f:
             json.dump([
                 {
                     "code": code,
-                    "label": lk.get("label", ""),
-                    "status": "pending",
-                    "created": lk.get("created", time.time()),
+                    "sharing_id": code,
+                    "name": lk.get("label", ""),
+                    "timestamp": lk.get("created", time.time()),
+                    "handshake": lk.get("handshake"),
+                    "connection_status": lk.get("connection_status", "pending"),
                 }
                 for code, lk in link_store.items()
             ], f, indent=2)
     except Exception as exc:
-        print(f"WARNING: failed to save links.json: {exc}")
+        print(f"WARNING: failed to save register.json: {exc}")
 
 
 def _load_links():
-    """Restore links created before a restart, reset to a clean pending state."""
+    """Restore the connection registry from register.json (falls back to the
+    legacy links.json file). Reset to a clean runtime state on reboot."""
     global link_store
-    if not os.path.exists(LINKS_PATH):
+    path = REGISTER_PATH if os.path.exists(REGISTER_PATH) else LINKS_PATH
+    if not os.path.exists(path):
         return
     try:
-        with open(LINKS_PATH, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             saved = json.load(f)
         for entry in saved:
             code = str(entry.get("code", "")).upper()
             if not code:
                 continue
+            connection_status = entry.get("connection_status", "pending")
+            # "accepted" is runtime state: after a reboot the camera must be
+            # approved again, so fall back to pending.
+            if connection_status == "accepted":
+                connection_status = "pending"
+            handshake = None
+            if connection_status == "disconnected":
+                handshake = entry.get("handshake")
             link_store.setdefault(code, {
-                "label": entry.get("label", "Remote Camera"),
+                "label": entry.get("name") or entry.get("label") or "Remote Camera",
                 "camera_id": None,
                 "status": "pending",
                 "frames": 0,
                 "last_frame": None,
                 "active_socket": False,
                 "socket": None,
-                "created": entry.get("created", time.time()),
+                "created": entry.get("timestamp") or entry.get("created")
+                or time.time(),
+                "connection_status": connection_status,
+                "handshake": handshake,
             })
         if link_store:
-            print(f"RESTORED {len(link_store)} device link(s) from links.json")
+            print(f"RESTORED {len(link_store)} link(s) from registry")
     except Exception as exc:
-        print(f"WARNING: failed to load links.json: {exc}")
+        print(f"WARNING: failed to load registry: {exc}")
 
 CONFIG = {}
 MODEL = None
@@ -777,6 +800,8 @@ def api_link_create():
             "active_socket": False,
             "socket": None,
             "created": time.time(),
+            "connection_status": "pending",
+            "handshake": None,
         }
         _persist_links()
 
@@ -793,10 +818,17 @@ def api_link_status(code):
     return jsonify({
         "ok": True,
         "label": link["label"],
+        "code": code.upper(),
+        "name": link["label"],
+        "sharing_id": code.upper(),
+        "timestamp": link.get("created"),
+        "handshake": link.get("handshake"),
+        "connection_status": link.get("connection_status", "pending"),
         "status": link["status"],
         "camera_id": link["camera_id"],
         "frames": link.get("frames", 0),
         "last_frame": link.get("last_frame"),
+        "connected": link.get("socket") is not None,
     })
 
 
@@ -808,9 +840,15 @@ def api_links():
             {
                 "code": code,
                 "label": lk["label"],
+                "name": lk["label"],
+                "sharing_id": code,
+                "timestamp": lk.get("created"),
+                "handshake": lk.get("handshake"),
+                "connection_status": lk.get("connection_status", "pending"),
                 "status": lk["status"],
                 "camera_id": lk["camera_id"],
                 "frames": lk.get("frames", 0),
+                "connected": lk.get("socket") is not None,
                 "created": lk.get("created"),
             }
             for code, lk in sorted(link_store.items(),
@@ -841,6 +879,9 @@ def api_link_confirm(code):
         link = link_store.get(code)
     label = link["label"] if link else code
     socket = link.get("socket") if link else None
+    with link_lock:
+        link["connection_status"] = "accepted"
+        _persist_links()
     if socket is not None:
         try:
             socket.send(json.dumps({"type": "active", "camera_id": camera_id}))
@@ -848,6 +889,56 @@ def api_link_confirm(code):
             pass
     print(f"HOST APPROVED: <{code}> -> {label} ({camera_id})")
     return jsonify({"ok": True, "camera_id": camera_id, "status": "active"})
+
+
+@app.route("/api/link/<code>/disconnect", methods=["POST"])
+def api_link_disconnect(code):
+    """The host stops receiving packets from a camera: drop the feeder socket
+    and shut down that camera's detection pipeline. The link stays in the
+    registry with connection_status=disconnected and can be approved again."""
+    code = code.upper()
+    with link_lock:
+        link = link_store.get(code)
+    if link is None:
+        return jsonify({"ok": False, "message": "Unknown link code."}), 404
+
+    with link_lock:
+        camera_id = link.get("camera_id")
+        sock = link.get("socket")
+
+    if sock is not None:
+        try:
+            sock.send(json.dumps({
+                "type": "error",
+                "message": "disconnected by host",
+            }))
+            sock.close()
+        except Exception:
+            pass
+
+    stop = None
+    if camera_id:
+        stop = remote_stop_events.pop(camera_id, None)
+        if stop is not None:
+            stop.set()
+        with remote_source_lock:
+            remote_sources.pop(camera_id, None)
+        with cam_lock:
+            cameras[:] = [c for c in cameras if c["id"] != camera_id]
+            camera_labels.pop(camera_id, None)
+
+    with link_lock:
+        link["camera_id"] = None
+        link["socket"] = None
+        link["frames"] = 0
+        link["last_frame"] = None
+        link["active_socket"] = False
+        link["handshake"] = None
+        link["connection_status"] = "disconnected"
+        _persist_links()
+
+    print(f"HOST DISCONNECTED: <{code}> (was camera {camera_id})")
+    return jsonify({"ok": True})
 
 
 @app.route("/api/link/<code>/delete", methods=["POST"])
@@ -922,7 +1013,16 @@ def api_unregister_remote_camera():
     with link_lock:
         for code, lk in list(link_store.items()):
             if lk["camera_id"] == camera_id:
-                del link_store[code]
+                # Keep the registry entry but close it out, the same way the
+                # Disconnect action does.
+                lk["camera_id"] = None
+                lk["socket"] = None
+                lk["frames"] = 0
+                lk["last_frame"] = None
+                lk["active_socket"] = False
+                lk["handshake"] = None
+                lk["connection_status"] = "disconnected"
+                lk["status"] = "pending"
         _persist_links()
 
     stop = remote_stop_events.pop(camera_id, None)
@@ -979,7 +1079,11 @@ def ws_cam(code):
                 link["socket"] = ws
             if not link.get("camera_id"):
                 link["status"] = "awaiting_confirm"
-                _persist_links()
+            # Device is here and waiting: reflect it in the registry so the
+            # host /devices page and the feeder's status poll can read it.
+            if link.get("connection_status") not in ("accepted", "disconnected"):
+                link["connection_status"] = "connected-waiting-approval"
+            _persist_links()
         print(f"WS CONNECTED: <{code}> streaming, waiting for host approval...")
         _log_stream("ws_open", code=code)
 
@@ -1070,6 +1174,12 @@ def ws_cam(code):
                     if link["frames"] == 1:
                         print(f"LINK FIRST FRAME RECEIVED: <{code}>")
                     link["last_frame"] = time.time()
+                    if link.get("camera_id"):
+                        # Frames are flowing: mark the handshake as shaken.
+                        if link.get("handshake") != "ok":
+                            link["handshake"] = "ok"
+                            print(f"LINK HANDSHAKE OK: <{code}>")
+                        _persist_links()
     except Exception as exc:
         print(f"WS CAM ERROR <{code}>: {exc}")
         traceback.print_exc()
@@ -1083,9 +1193,18 @@ def ws_cam(code):
             if link is not None:
                 if link.get("socket") is ws:
                     link["socket"] = None
-                if not link.get("camera_id") and link["status"] != "pending":
+                if link.get("camera_id"):
+                    # Approved feed paused (device went away) — keep "accepted",
+                    # the device re-syncs on reconnect.
+                    pass
+                elif link.get("connection_status") == "disconnected":
+                    # Host chose to stop receiving: keep that state.
+                    pass
+                elif link["status"] != "pending":
                     link["status"] = "pending"
-                    _persist_links()
+                    if link.get("connection_status") != "accepted":
+                        link["connection_status"] = "pending"
+                _persist_links()
     _log_stream("ws_close", code=code)
     return ""
 
@@ -1242,6 +1361,56 @@ def api_enroll_status():
                 "status": job["status"],
             })
     return jsonify(jobs)
+
+
+@app.route("/api/doctors")
+def api_doctors():
+    """List currently enrolled doctor accounts (their appearance profiles)."""
+    with profile_lock:
+        names = sorted(PROFILES.keys())
+    return jsonify(names)
+
+
+@app.route("/api/doctors/delete", methods=["POST"])
+def api_doctor_delete():
+    """Remove a doctor's account: delete the appearance profile file, the
+    in-memory profile, its live/zone/presence state and stop any active
+    tracking that refers to that name."""
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "message": "Name required."}), 400
+
+    safe = sanitize_filename(name)
+    path = os.path.join(PROFILES_DIR, safe + ".json")
+    removed = False
+
+    with profile_lock:
+        if safe in PROFILES:
+            del PROFILES[safe]
+            removed = True
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+            removed = True
+        except Exception as exc:
+            return jsonify({"ok": False,
+                            "message": f"Could not delete the profile file: {exc}"}), 500
+    if not removed:
+        return jsonify({"ok": False, "message": f"No enrolled doctor named '{safe}'."}), 404
+
+    with state_lock:
+        states.pop(safe, None)
+    with live_lock:
+        live_status.pop(safe, None)
+    with presence_lock:
+        for cam_presence in camera_presence.values():
+            names = cam_presence.get("names")
+            if isinstance(names, set):
+                names.discard(safe)
+
+    print(f"DOCTOR REMOVED: {safe}")
+    return jsonify({"ok": True})
 
 
 def main():
