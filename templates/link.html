@@ -68,7 +68,7 @@
         }
 
         function connect() {
-            if (invalid || !stream) return;
+            if (invalid) return;
             if (ws) {
                 var st = ws.readyState;
                 if (st === WebSocket.OPEN || st === WebSocket.CONNECTING) return;
@@ -124,6 +124,17 @@
                 .catch(function () {});
         }
 
+        // Ensure exactly one socket exists (opens one immediately at page load
+        // so the host sees the device connect and can hit Approve — no need to
+        // wait for the camera, which the phone may only allow from a gesture).
+        function ensureSocket() {
+            if (invalid) return;
+            if (!ws ||
+                (ws.readyState !== WebSocket.OPEN && ws.readyState !== WebSocket.CONNECTING)) {
+                connect();
+            }
+        }
+
         function applyRegistry(d) {
             var cs = d.connection_status;
             if (cs === "disconnected") {
@@ -137,6 +148,7 @@
                 return;
             }
             if (cs === "accepted") {
+                ensureSocket();
                 if (!stream) {
                     approved = false;
                     setStatus("Approved by the host — grant camera access to start streaming.");
@@ -154,6 +166,7 @@
                 return;
             }
             if (cs === "connected-waiting-approval") {
+                ensureSocket();
                 if (!stream) {
                     setStatus("The host sees this device — grant camera access to connect and stream.");
                     setCamStatus("Waiting for camera access...");
@@ -163,6 +176,7 @@
                 }
                 return;
             }
+            ensureSocket();
             setStatus("Waiting for the host to approve this link.");
             setCamStatus(stream ? "Live preview — waiting." : "Waiting for camera access...");
         }
@@ -301,7 +315,10 @@
                     return video.play().catch(function () {});
                 })
                 .then(function () {
-                    connect();
+                    connect();              // socket may already be open — no-op
+                    if (approved && video.videoWidth) {
+                        startSending();     // approved before camera arrived
+                    }
                 })
                 .catch(function (e) {
                     setStatus("Camera access denied: " + (e.message || e.name || e)
@@ -316,9 +333,11 @@
             if (!stream) allowCamera();
         });
 
-        // Poll the registry right away — even before the camera is granted —
-        // so the status reflects host approvals/new requests within 3s.
+        // Poll the registry every 3s and open the socket immediately — even
+        // before the camera is granted — so the host sees the device connect
+        // and can Approve it right away.
         startPolling();
+        connect();
         allowCamera();
     </script>
 </body>
