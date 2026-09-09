@@ -46,7 +46,6 @@
                 var img = document.createElement("img");
                 img.src = "/api/video_preview/" + encodeURIComponent(c.id);
                 img.alt = "Live preview " + c.label;
-                if (c.remote) { img.className = "mirror"; }
                 panel.appendChild(label);
                 panel.appendChild(img);
                 grid.appendChild(panel);

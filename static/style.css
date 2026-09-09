@@ -170,7 +170,6 @@ nav {
     display: block;
     max-width: 640px;
     max-height: 360px;
-    transform: scaleX(-1);
 }
 
 .preview-label {
@@ -188,13 +187,6 @@ nav {
     display: block;
     width: 100%;
     height: auto;
-}
-
-/* Mirror only phone/remote feeder feeds so the dashboard matches the
-   phone's (selfie) self-view. Fixed webcams keep their true orientation —
-   track/zone processing always uses the raw, un-mirrored frames. */
-.preview-panel img.mirror {
-    transform: scaleX(-1);
 }
 
 .preview-note {

@@ -1222,7 +1222,9 @@ def main():
         config["frame_skip"] = int(os.environ["CLOUD_FRAME_SKIP"])
     if os.environ.get("CLOUD_DETECTION_CONFIDENCE"):
         config["detection_confidence"] = float(os.environ["CLOUD_DETECTION_CONFIDENCE"])
-    # Cameras are attached only through the device-link / approval flow
+    # Cameras are attached at startup from config.json (wired) or later via the
+    # device-link / approval flow (remote). See _boot_wired_cameras below.
+    global cameras, camera_labels
     cameras = []
     camera_labels = {}
 
@@ -1239,6 +1241,43 @@ def main():
               "Use the web UI (/enroll) or enroll.py to add doctors.")
 
     MODEL = YOLO("yolov8n.pt")
+
+    # Boot the wired (webcam / RTSP) cameras declared in config.json so they
+    # appear in the feeds/enroll lists and run the tracking pipeline from the
+    # start. Remote ("link") cameras are NOT started here — they attach later
+    # through the device-link / approval flow (_activate_link).
+    for ent in config.get("cameras", []):
+        cid = ent.get("id")
+        src_cfg = ent.get("source")
+        if isinstance(src_cfg, dict):
+            continue
+        cam = {
+            "id": cid,
+            "label": ent.get("label", cid),
+            "source": src_cfg,
+            "remote": False,
+            "chair_zone_polygon": (ent.get("chair_zone_polygon")
+                                   or config.get("chair_zone_polygon")
+                                   or list(DEFAULT_ZONE)),
+            "detection_confidence": ent.get(
+                "detection_confidence",
+                config.get("detection_confidence", 0.5)),
+            "frame_skip": ent.get("frame_skip", config.get("frame_skip", 2)),
+        }
+        cap = cv2.VideoCapture(src_cfg)
+        if not cap.isOpened():
+            print(f"WARNING: could not open configured camera '{cid}' "
+                  f"(source {src_cfg!r}) - skipped.")
+            continue
+        stop = threading.Event()
+        with cam_lock:
+            cameras.append(cam)
+            camera_labels[cid] = cam["label"]
+        with remote_source_lock:
+            remote_sources[cid] = cap
+            remote_stop_events[cid] = stop
+        threading.Thread(target=camera_loop, args=(cam, stop), daemon=True).start()
+        print(f"WIRED CAMERA STARTED: {cam['label']} ({cid}) source={src_cfg!r}")
 
     threading.Thread(target=state_machine_loop, args=(config,), daemon=True).start()
 
