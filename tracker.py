@@ -1017,6 +1017,16 @@ def ws_cam(code):
                     src = remote_sources.get(cam_id)
             if src is not None:
                 src.push(img)
+                # Keep the live preview fresh at the FULL inbound frame rate.
+                # The camera thread only gets to publish when a detection cycle
+                # finishes (YOLO ~200-400ms every few frames on this box), so if
+                # publishing were left to it alone, viewers would see a low-fps
+                # slideshow that looks like a bad call. Publishing here, on the
+                # socket thread, decouples preview freshness from detection
+                # latency. The camera thread still publishes the badged version
+                # whenever one is ready, which simply overwrites this latest-wins
+                # slot a moment later.
+                publish_preview(cam_id, img)
 
             with link_lock:
                 link = link_store.get(code)
