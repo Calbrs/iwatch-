@@ -2,12 +2,10 @@
 # 1. In the Render Dashboard: New Web Service → Docker
 # 2. Set the Dockerfile field to point at this repo's Dockerfile
 # 3. Render automatically sets the PORT env var; our app reads it.
-# 4. Free tier: 512 MB RAM / 0.1 CPU – YOLO will run on CPU, fps will be
-#    lower than on a local GPU but the device‑to‑cloud WebSocket path is
-#    direct (no ngrok tunnel), which often feels smoother in practice.
-# 5. Health check: /api/cameras returns 200 when the server is up.
 # 6. Because Render free spins down after 15 min of inactivity, the first
 #    request triggers a cold‑start (~1 min). Subsequent traffic keeps it alive.
+#    Note: YOLOv8n runs on CPU only; fps will be lower than on a local GPU,
+#    but the device‑to‑cloud WebSocket path is direct, which feels smooth.
 
 services:
   - type: web

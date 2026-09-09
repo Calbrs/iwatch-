@@ -9,9 +9,8 @@ venv/
 logs.db
 links.json
 
-# Local logs / tunnels
+# Local logs
 *.log
-public_url.txt
 
 # OS / editor
 .DS_Store

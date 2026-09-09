@@ -72,18 +72,17 @@ This creates `profiles/dr_smith.json` containing a numeric histogram array
 python tracker.py
 ```
 
-Or use the one-shot launcher, which prints everything **live in the same
-console** (tracker + ngrok logs) and guarantees that pressing **Ctrl+C**
-stops the tracker and the tunnel too (no orphaned processes; any leftover
-server on port 5000 is cleaned up first):
+Or use the one-shot launcher, which prints the tracker log **live in the same
+console** and guarantees that pressing **Ctrl+C** stops the tracker (no orphaned
+processes; any leftover server on port 5000 is cleaned up first):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File start.ps1
 ```
 
-Then open `http://localhost:5000` in a browser (or the public HTTPS URL
-printed by `start.ps1`, also saved to `public_url.txt`). The dashboard
-auto-refreshes every 5 seconds.
+Then open `http://localhost:5000` in a browser. The dashboard auto-refreshes
+every 5 seconds. For remote/device access use a cloud deploy (Render or HF
+Space), which provides the public HTTPS endpoint.
 
 ## Linking Device Cameras (up to 50)
 
@@ -209,9 +208,10 @@ env var, and the `Dockerfile` is the single build definition.
 6. Deploy. The public URL (`https://<service>.onrender.com`) is the URL you
    open, generate device links, and hand to phones.
 
-Constraints: 512 MB RAM / 0.1 CPU. YOLOv8n runs on CPU; the direct WebSocket
-path (no ngrok) feels smooth. The free instance spins down after 15 min idle
-(also spins up again on the next request — ~1 min cold start).
+Constraints: 512 MB RAM / 0.1 CPU. YOLOv8n runs on CPU; the device-to-cloud
+WebSocket path is direct (Render's own HTTPS), which feels smooth. The free
+instance spins down after 15 min idle (also spins up again on the next request
+— ~1 min cold start).
 
 ### Option B — Hugging Face Spaces (Docker, requires PRO to create)
 HF reads the `sdk: docker` YAML at the top of this `README.md` and runs the
@@ -237,8 +237,8 @@ Render Option A.
 ### Local‑network tip (no cloud)
 If you prefer the absolute smoothest fps and have a local network, you can
 run the tracker directly on a spare laptop/PC, expose it via Cloudflare Tunnel
-or ngrok, and have devices connect to the public URL. This avoids the 512 MB
-RAM ceiling and gives you full GPU access if available.
+(or any tunnel/RDP), and have devices connect to the public URL. This avoids
+the 512 MB RAM ceiling and gives you full GPU access if available.
 
 ### Environment‑variable overrides (optional, for cloud tuning)
 - `CLOUD_FRAME_SKIP` – e.g. `3` processes every 3rd frame, raising fps at the
