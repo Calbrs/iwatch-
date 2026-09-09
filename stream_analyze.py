@@ -30,6 +30,8 @@ def main():
     total_sent_seqs = {}
     open_ws = collections.defaultdict(list)
     close_ws = collections.defaultdict(list)
+    seen_seqs = {}                             # code -> set(seq) seen so far
+    prev_total = {}                            # code -> last sentTotal
 
     with open(path, encoding="utf-8") as fh:
         for line in fh:
@@ -48,8 +50,17 @@ def main():
                 data = rec.get("data") or {}
                 seq = data.get("seq", 0)
                 total_sent_seqs[code] = max(total_sent_seqs.get(code, 0), seq or 0)
+                # Telemetry batches overlap (each ships the last ~2.5 s), so
+                # dedupe by (code, seq); reset when the page restarts its
+                # sequence (sentTotal goes backwards).
+                st = data.get("sentTotal", 0)
+                if prev_total.get(code, 0) > (st or 0):
+                    seen_seqs[code] = set()
+                prev_total[code] = st or 0
+                hs = seen_seqs.setdefault(code, set())
                 for b in data.get("batch") or []:
-                    if len(b) >= 3:
+                    if len(b) >= 3 and b[0] not in hs:
+                        hs.add(b[0])
                         sends[code].append((b[0], b[1], b[2]))
             elif evt == "recv":
                 recvs[code].append(rec.get("t", 0))
