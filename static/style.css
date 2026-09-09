@@ -188,9 +188,12 @@ nav {
     display: block;
     width: 100%;
     height: auto;
-    /* Mirror the live feed so the dashboard matches the phone's (selfie)
-       self-view. The track/zone processing still uses the raw, un-mirrored
-       frames — only what the viewer sees is flipped. */
+}
+
+/* Mirror only phone/remote feeder feeds so the dashboard matches the
+   phone's (selfie) self-view. Fixed webcams keep their true orientation —
+   track/zone processing always uses the raw, un-mirrored frames. */
+.preview-panel img.mirror {
     transform: scaleX(-1);
 }
 
