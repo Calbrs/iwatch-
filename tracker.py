@@ -411,6 +411,8 @@ def camera_loop(cam, stop_event):
                 continue
 
             frame_count += 1
+            if frame_count % 300 == 1:
+                print(f"DEBUG camera_loop {camera_id}: frame_count={frame_count}, frame_shape={frame.shape if frame is not None else None}")
 
             # Remote frames were flipped at the source (front camera is a
             # mirror of reality). Reflect the configured chair zone along x so
