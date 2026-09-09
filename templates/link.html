@@ -14,18 +14,17 @@
 
     <section>
         <h2>Linking code: <span id="code">{{ link_code }}</span></h2>
-        <p>Grant camera access below and this device streams its feed
-           to the tracker. The host then approves the camera for tracking.
+        <p>Camera access is requested automatically when this page opens.
+           The tracker host then approves this camera for tracking on the
+           /devices page — streaming starts once approved.
            Frames are used live only — nothing is recorded or stored.</p>
 
         <div class="preview-wrap">
             <video id="self-view" autoplay playsinline muted></video>
+            <p class="preview-note" id="tap-hint">If the permission prompt was
+               blocked, tap the preview above to request it again.</p>
         </div>
-
-        <div class="actions">
-            <button id="start" class="btn primary">Allow Camera &amp; Stream</button>
-        </div>
-        <p class="preview-note" id="cam-status">Waiting for permission...</p>
+        <p class="preview-note" id="cam-status">Requesting camera permission...</p>
     </section>
 
     <section>
@@ -43,10 +42,10 @@
         var timer = null;
         var framesSent = 0;
         var streaming = false;
+        var approved = false;
         var invalid = false;
         var statusEl = document.getElementById("status");
         var camStatusEl = document.getElementById("cam-status");
-        var startBtn = document.getElementById("start");
 
         var frameSeq = 0;       // monotonically increasing per captured frame
         var sendLog = [];       // [seq, captureMs, sendMs, width, quality] ring
@@ -73,22 +72,26 @@
             ws = new WebSocket(wsUrl());
             ws.binaryType = "arraybuffer";
             ws.onopen = function () {
-                streaming = true;
-                setStatus("Streaming — waiting for the host to approve this camera for tracking.");
-                startSending();
+                setStatus("Connected — waiting for the host to approve this camera for tracking...");
+                setCamStatus("Live preview — waiting for host approval before streaming.");
             };
             ws.onmessage = function (ev) {
                 if (typeof ev.data !== "string") return;
                 var msg;
                 try { msg = JSON.parse(ev.data); } catch (e) { return; }
                 if (msg.type === "active") {
-                    setStatus("Approved — streaming as camera " + msg.camera_id + ".");
+                    approved = true;
+                    streaming = true;
+                    setStatus("Approved — streaming live as camera " + msg.camera_id + ".");
+                    setCamStatus("Live preview — streaming at full speed.");
+                    startSending();
                 } else if (msg.type === "error") {
                     setStatus("Server said: " + (msg.message || "unknown error"));
                 }
             };
             ws.onclose = function () {
                 streaming = false;
+                approved = false;
                 if (timer) { clearInterval(timer); timer = null; }
                 checkLink().then(function (d) {
                     if (d === null) {
@@ -200,20 +203,17 @@
         }
 
         function allowCamera() {
-            if (startBtn.disabled) return;
-            startBtn.disabled = true;
+            if (stream) return;
             setStatus("Requesting camera access...");
             if (!window.isSecureContext) {
                 setStatus("Camera needs a secure (https) connection. Open this link via the "
                           + "public HTTPS url, or on localhost.");
                 setCamStatus("Camera unavailable: insecure connection.");
-                startBtn.disabled = false;
                 return;
             }
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
                 setStatus("Camera API is not available on this browser/connection.");
                 setCamStatus("Camera unavailable.");
-                startBtn.disabled = false;
                 return;
             }
             navigator.mediaDevices.getUserMedia({ audio: false, video: true })
@@ -223,17 +223,23 @@
                     return video.play().catch(function () {});
                 })
                 .then(function () {
-                    setCamStatus("Live preview — streaming automatically.");
+                    setCamStatus("Live preview — waiting for host approval before streaming.");
+                    setStatus("Camera granted — waiting for the host to approve this camera on /devices.");
                     connect();
-                    setStatus("Camera granted — streaming. The host must approve this camera on the /devices page.");
                 })
                 .catch(function (e) {
-                    startBtn.disabled = false;
-                    setStatus("Camera access denied: " + (e.message || e.name || e));
+                    setStatus("Camera access denied: " + (e.message || e.name || e)
+                              + " — tap the preview to try again.");
+                    setCamStatus("Camera blocked. Tap the preview to request access.");
                 });
         }
 
-        startBtn.addEventListener("click", allowCamera);
+        // Retry permission request on tap (some mobile browsers only allow
+        // camera access from a user gesture).
+        video.addEventListener("click", function () {
+            if (!stream) allowCamera();
+        });
+
         allowCamera();
     </script>
 </body>

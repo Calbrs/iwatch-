@@ -975,6 +975,17 @@ def ws_cam(code):
         print(f"WS CONNECTED: <{code}> streaming, waiting for host approval...")
         _log_stream("ws_open", code=code)
 
+        # If this link is already approved (e.g. the feeder reconnected after a
+        # blip), re-send the active message so it resumes streaming right away.
+        with link_lock:
+            link = link_store.get(code)
+            if link is not None and link.get("camera_id"):
+                try:
+                    ws.send(json.dumps({"type": "active",
+                                        "camera_id": link["camera_id"]}))
+                except Exception:
+                    pass
+
         while True:
             try:
                 data = ws.receive(timeout=1.0)
