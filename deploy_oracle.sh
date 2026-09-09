@@ -45,8 +45,20 @@ fi
 echo "==> Install Python deps into a virtualenv (ARM64 wheels)"
 python3 -m venv "$APP_DIR/.venv"
 "$APP_DIR/.venv/bin/pip" install --upgrade pip
+# CPU-only torch FIRST so ultralytics doesn't pull the CUDA build
+# (~1.5 GB of unused NVIDIA wheels at ~400 kB/s on ARM).
+"$APP_DIR/.venv/bin/pip" install --index-url https://download.pytorch.org/whl/cpu torch
 "$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/requirements.txt"
-"$APP_DIR/.venv/bin/pip" install --upgrade opencv-python-headless
+# Force headless OpenCV: ultralytics drags in GUI opencv-python, whose cv2
+# import crashes headless VMs (libxcb/libGL missing).
+"$APP_DIR/.venv/bin/pip" uninstall -y opencv-python 2>/dev/null || true
+"$APP_DIR/.venv/bin/pip" install --force-reinstall --no-deps opencv-python-headless
+# OpenCV runtime system libs (belt and braces)
+if [ "$PKG_MGR" = "apt-get" ]; then
+    sudo apt-get install -y --no-install-recommends libgl1 libglib2.0-0 libxcb1
+else
+    sudo dnf install -y libgl1 libglib2.0-0 libxcb1 2>/dev/null || true
+fi
 
 echo "==> Open firewall port $APP_PORT (still required: OCI Security List rule!)"
 if command -v firewall-cmd >/dev/null 2>&1; then
