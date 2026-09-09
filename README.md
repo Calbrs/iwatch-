@@ -234,6 +234,40 @@ plan. The only free HF compute is Gradio “ZeroGPU” ($0/hr but limited to 2
 spaces and requires a Gradio app, not Flask). If you don’t have PRO, use
 Render Option A.
 
+### Option C — Oracle Cloud Always Free (best free performance)
+A real `VM.Standard.A1.Flex` ARM VPS: up to 4 OCPU / 24 GB RAM / 200 GB disk,
+free forever (no idle shutdown). 2 OCPU / 14 GB runs YOLOv8n at several x the
+speed of Render's 0.1 CPU.
+
+1. Provision the instance (Compute → Create Instance → shape `A1.Flex`,
+   Ubuntu 24.04 or Oracle Linux, download the SSH key). If "Out of capacity",
+   retry in a different availability domain or take 1–2 OCPU first.
+2. In the OCI Console open **TCP 5000** in the VCN Security List
+   (VCN → Public Subnet → Security List → Add Ingress Rule, source
+   `0.0.0.0/0`, port 5000). OCI blocks everything by default.
+3. SSH from Windows: `ssh -i <key> ubuntu@<public-ip>` (Ubuntu) or `opc@`
+   (Oracle Linux). If your key's permissions are rejected on Windows:
+   `icacls <key> /inheritance:r /grant:r "$($env:USERNAME):R"`.
+4. Run the one-shot deployer in the repo:
+   ```bash
+   bash deploy_oracle.sh
+   ```
+   It installs deps in a venv, opens the firewall, and registers a systemd
+   service (`iwatch-tracker`) that auto-starts on boot and restarts on crash.
+5. Verify: `http://<public-ip>:5000`.
+
+**HTTPS for phones (required — browsers block camera access on plain HTTP):**
+- Easiest, no domain, free: a Cloudflare quick tunnel.
+  ```bash
+  curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 -o cloudflared \
+    && chmod +x cloudflared && sudo mv cloudflared /usr/local/bin/
+  cloudflared tunnel --url http://localhost:5000
+  ```
+  It prints `https://<random>.trycloudflare.com` — use that URL for the
+  dashboard and device links. Note: the URL changes on each restart.
+- Stable HTTPS with a domain: install Caddy (auto Let's-Encrypt) or a named
+  Cloudflare tunnel and point it at `http://localhost:5000`.
+
 ### Local‑network tip (no cloud)
 If you prefer the absolute smoothest fps and have a local network, you can
 run the tracker directly on a spare laptop/PC, expose it via Cloudflare Tunnel
