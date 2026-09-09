@@ -32,6 +32,10 @@
 
     <section>
         <h2>Device links</h2>
+        <div class="field">
+            <button id="use-local-camera" class="btn primary">Use Local Camera</button>
+            <span id="local-camera-status" class="status"></span>
+        </div>
         <div class="table-wrap">
             <table>
                 <thead>
@@ -220,6 +224,43 @@
                 })
                 .catch(function (e) {
                     result.textContent = "Error: " + e;
+                });
+        });
+
+        document.getElementById("use-local-camera").addEventListener("click", function () {
+            var btn = this;
+            var statusEl = document.getElementById("local-camera-status");
+            btn.disabled = true;
+            btn.textContent = "Starting...";
+            statusEl.textContent = "Requesting camera access...";
+            fetch("/api/local_camera/start", { method: "POST" })
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                    if (!d.ok) {
+                        statusEl.textContent = "Error: " + (d.message || "failed");
+                        btn.disabled = false;
+                        btn.textContent = "Use Local Camera";
+                        return;
+                    }
+                    // Open the local camera page in a new tab
+                    var win = window.open(d.url, "_blank", "width=640,height=480");
+                    if (!win) {
+                        statusEl.textContent = "Popup blocked — allow popups for this site.";
+                        btn.disabled = false;
+                        btn.textContent = "Use Local Camera";
+                        return;
+                    }
+                    statusEl.textContent = "Local camera tab opened. It will auto-approve and start tracking.";
+                    btn.disabled = false;
+                    btn.textContent = "Use Local Camera";
+                    // Poll briefly to show approval in the table
+                    var poll = setInterval(function () { loadLinks(); loadDevices(); }, 1000);
+                    setTimeout(function () { clearInterval(poll); loadLinks(); loadDevices(); }, 8000);
+                })
+                .catch(function (e) {
+                    statusEl.textContent = "Error: " + e;
+                    btn.disabled = false;
+                    btn.textContent = "Use Local Camera";
                 });
         });
 

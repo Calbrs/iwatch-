@@ -819,6 +819,46 @@ def api_link_create():
     return jsonify({"ok": True, "code": code, "link_url": f"/link/{code}"})
 
 
+@app.route("/api/local_camera/start", methods=["POST"])
+def api_local_camera_start():
+    """Create a link for the host's own browser camera and return the local_camera page URL.
+    Auto-approves since it's the host's own device."""
+    with cam_lock:
+        remote_count = sum(1 for c in cameras if c.get("remote"))
+        if remote_count >= MAX_REMOTE_CAMERAS:
+            return jsonify({
+                "ok": False,
+                "message": f"Device camera limit ({MAX_REMOTE_CAMERAS}) reached."
+            }), 400
+
+    code = _new_link_code()
+    with link_lock:
+        link_store[code] = {
+            "label": "Local Camera",
+            "camera_id": None,
+            "status": "pending",
+            "frames": 0,
+            "last_frame": None,
+            "active_socket": False,
+            "socket": None,
+            "created": time.time(),
+            "connection_status": "pending",
+            "handshake": None,
+        }
+        _persist_links()
+
+    # Immediately approve it (host's own camera) so it gets a camera_id and starts tracking
+    with link_lock:
+        link = link_store.get(code)
+        camera_id = _activate_link(link)
+        link["connection_status"] = "accepted"
+        link["status"] = "active"
+        _persist_links()
+
+    print(f"LOCAL CAMERA STARTED: {code} -> {camera_id}")
+    return jsonify({"ok": True, "code": code, "camera_id": camera_id, "url": f"/local_camera/{code}"})
+
+
 @app.route("/api/link/<code>")
 def api_link_status(code):
     with link_lock:
@@ -978,6 +1018,16 @@ def link_page(code):
     if link is None:
         return "This link is not valid or has already been used.", 404
     return render_template("link.html", link_code=code.upper())
+
+
+@app.route("/local_camera/<code>")
+def local_camera_page(code):
+    """Host's local camera page: auto-request camera and stream."""
+    with link_lock:
+        link = link_store.get(code.upper())
+    if link is None:
+        return "This link is not valid or has already been used.", 404
+    return render_template("local_camera.html", link_code=code.upper())
 
 
 @app.route("/devices")
