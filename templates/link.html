@@ -59,8 +59,14 @@
         var sendLog = [];       // [seq, captureMs, sendMs, width, quality] ring
         var lastTelemMs = 0;    // last time we shipped a telemetry batch
 
-        function setStatus(text) { statusEl.textContent = text; }
-        function setCamStatus(text) { camStatusEl.textContent = text; }
+        function setStatus(text) {
+            // Only touch the DOM when the text actually changes, so the quiet
+            // 3s background poll never disturbs the page visibly.
+            if (statusEl.textContent !== text) statusEl.textContent = text;
+        }
+        function setCamStatus(text) {
+            if (camStatusEl.textContent !== text) camStatusEl.textContent = text;
+        }
 
         function wsUrl() {
             var proto = location.protocol === "https:" ? "wss" : "ws";
@@ -79,8 +85,8 @@
             ws = new WebSocket(wsUrl());
             ws.binaryType = "arraybuffer";
             ws.onopen = function () {
-                setStatus("Connected — waiting for the host to approve this camera for tracking...");
-                setCamStatus("Live preview — waiting for host approval before streaming.");
+                setStatus("Connected — waiting for approval");
+                setCamStatus("Live preview — waiting for approval before streaming.");
             };
             ws.onmessage = function (ev) {
                 if (typeof ev.data !== "string") return;
@@ -89,11 +95,11 @@
                 if (msg.type === "active") {
                     approved = true;
                     streaming = true;
-                    setStatus("Approved — streaming live as camera " + msg.camera_id + ".");
-                    setCamStatus("Live preview — streaming at full speed.");
+                    setStatus("Approved — streaming live");
+                    setCamStatus("Live preview — streaming.");
                     startSending();
                 } else if (msg.type === "error") {
-                    setStatus("Server said: " + (msg.message || "unknown error"));
+                    setStatus(msg.message || "Server error");
                 }
             };
             ws.onclose = function () {
@@ -143,24 +149,24 @@
                 if (timer) { clearInterval(timer); timer = null; }
                 if (ws) { try { ws.close(); } catch (e) {} }
                 ws = null;
-                setStatus("Disconnected by the host — the tracker is not receiving frames from this camera.");
-                setCamStatus("Live preview only. Ask the host to re-approve this camera.");
+                setStatus("Disconnected by host");
+                setCamStatus("Live preview only.");
                 return;
             }
             if (cs === "accepted") {
                 ensureSocket();
                 if (!stream) {
                     approved = false;
-                    setStatus("Approved by the host — grant camera access to start streaming.");
+                    setStatus("Approved — grant camera to stream");
                     setCamStatus("Waiting for camera access...");
                     return;
                 }
                 approveAndStream();
                 if (d.handshake === "ok" && d.camera_id) {
-                    setStatus("Approved — streaming live as camera " + d.camera_id + ".");
-                    setCamStatus("Live preview — streaming at full speed.");
+                    setStatus("Approved — streaming live");
+                    setCamStatus("Live preview — streaming.");
                 } else {
-                    setStatus("Approved — starting the stream...");
+                    setStatus("Approved — starting stream...");
                     setCamStatus("Live preview — streaming.");
                 }
                 return;
@@ -168,16 +174,16 @@
             if (cs === "connected-waiting-approval") {
                 ensureSocket();
                 if (!stream) {
-                    setStatus("The host sees this device — grant camera access to connect and stream.");
+                    setStatus("Connected — grant camera to stream");
                     setCamStatus("Waiting for camera access...");
                 } else {
-                    setStatus("Connected — waiting for the host to approve this camera on /devices.");
-                    setCamStatus("Live preview — waiting for host approval before streaming.");
+                    setStatus("Connected — waiting for approval");
+                    setCamStatus("Live preview — waiting for approval before streaming.");
                 }
                 return;
             }
             ensureSocket();
-            setStatus("Waiting for the host to approve this link.");
+            setStatus("Waiting for approval");
             setCamStatus(stream ? "Live preview — waiting." : "Waiting for camera access...");
         }
 

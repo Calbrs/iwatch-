@@ -71,6 +71,9 @@ preview_frames = {}
 preview_times = {}
 preview_versions = {}
 
+badge_lock = threading.Lock()
+latest_badges = {}
+
 LIVE_AFTER_SECONDS = 4.0
 
 # --- Remote-stream telemetry logging ---------------------------------------
@@ -465,6 +468,13 @@ def camera_loop(cam, stop_event):
                         if t.identity.name in presence
                     }
 
+                    # Share the latest detection boxes so the fast socket-thread
+                    # publisher can draw the green badges on every preview frame
+                    # (otherwise the badge would be overwritten within one frame
+                    # by the next raw frame arriving from the device).
+                    with badge_lock:
+                        latest_badges[camera_id] = dict(current_badges)
+
                     # Web self-enrollment: when a job targets this camera, collect
                     # samples whenever exactly one stable person can be tracked.
                     # Frames used here are still live-only, never persisted.
@@ -752,7 +762,7 @@ def _activate_link(link):
         "remote": True,
         "chair_zone_polygon": list(zone),
         "detection_confidence": CONFIG.get("detection_confidence", 0.5),
-        "frame_skip": CONFIG.get("frame_skip", 2),
+        "frame_skip": CONFIG.get("frame_skip", 1),
     }
 
     with cam_lock:
@@ -1162,9 +1172,13 @@ def ws_cam(code):
                 # publishing were left to it alone, viewers would see a low-fps
                 # slideshow that looks like a bad call. Publishing here, on the
                 # socket thread, decouples preview freshness from detection
-                # latency. The camera thread still publishes the badged version
-                # whenever one is ready, which simply overwrites this latest-wins
-                # slot a moment later.
+                # latency. To keep the green doctor badges on screen the whole
+                # time, draw the latest detection boxes onto this frame before
+                # publishing (each inbound frame is a fresh buffer, so drawing
+                # in place is safe).
+                with badge_lock:
+                    for name, box in latest_badges.get(cam_id, {}).items():
+                        _draw_name_badge(img, name, box)
                 publish_preview(cam_id, img)
 
             with link_lock:
@@ -1466,7 +1480,7 @@ def main():
             "detection_confidence": ent.get(
                 "detection_confidence",
                 config.get("detection_confidence", 0.5)),
-            "frame_skip": ent.get("frame_skip", config.get("frame_skip", 2)),
+            "frame_skip": ent.get("frame_skip", config.get("frame_skip", 1)),
         }
         cap = cv2.VideoCapture(src_cfg)
         if not cap.isOpened():

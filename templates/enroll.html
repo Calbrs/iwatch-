@@ -124,7 +124,13 @@
                             return;
                         }
                         statusEl.textContent = job.message || job.status;
-                        if (job.status === "complete" || job.status === "error") {
+                        if (job.status === "complete") {
+                            clearInterval(pollTimer);
+                            statusEl.textContent = job.message || "Enrollment complete.";
+                            setTimeout(function () {
+                                location.href = "/feeds";
+                            }, 1500);
+                        } else if (job.status === "error") {
                             clearInterval(pollTimer);
                             statusEl.textContent += " — you can return to the dashboard.";
                         }
