@@ -139,8 +139,8 @@ nav {
 }
 
 .preview-panel {
-    flex: 1 1 400px;
-    max-width: 640px;
+    flex: 1 1 280px;
+    max-width: 420px;
     background-color: #000;
     border: 1px solid #334155;
     border-radius: 8px;
@@ -188,6 +188,10 @@ nav {
     display: block;
     width: 100%;
     height: auto;
+    /* Mirror the live feed so the dashboard matches the phone's (selfie)
+       self-view. The track/zone processing still uses the raw, un-mirrored
+       frames — only what the viewer sees is flipped. */
+    transform: scaleX(-1);
 }
 
 .preview-note {
