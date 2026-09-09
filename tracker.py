@@ -375,6 +375,7 @@ def camera_loop(cam, stop_event):
     This frame is never persisted — used live only.
     """
     camera_id = cam["id"]
+    print(f"DEBUG camera_loop STARTED for {camera_id}")
     polygon = np.array(cam["chair_zone_polygon"], dtype=np.int32)
     zone_reflected = False
     frame_skip = cam["frame_skip"]
@@ -746,7 +747,9 @@ def _activate_link(link):
     Idempotent: if the link is already active its existing camera id is
     returned. Called by the HOST's Approve action (never by the device).
     """
+    print(f"DEBUG _activate_link called for {link.get('label')}, camera_id={link.get('camera_id')}")
     if link.get("camera_id"):
+        print(f"DEBUG _activate_link: already has camera_id {link['camera_id']}, returning")
         return link["camera_id"]
 
     with cam_lock:
@@ -1497,6 +1500,7 @@ def main():
             remote_sources[cid] = cap
             remote_stop_events[cid] = stop
         threading.Thread(target=camera_loop, args=(cam, stop), daemon=True).start()
+        print(f"DEBUG: camera_loop thread STARTED for {cid}")
         print(f"WIRED CAMERA STARTED: {cam['label']} ({cid}) source={src_cfg!r}")
 
     threading.Thread(target=state_machine_loop, args=(config,), daemon=True).start()
