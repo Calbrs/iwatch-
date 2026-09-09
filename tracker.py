@@ -963,12 +963,20 @@ def ws_cam(code):
             link = link_store.get(code)
             if link is None:
                 return ""
-            if link.get("socket") is not None:
-                ws.send(json.dumps({"type": "error",
-                                    "message": "already streaming from another tab"}))
-                ws.close()
-                return ""
-            link["socket"] = ws
+            if link.get("socket") is not None and link.get("socket") is not ws:
+                # A previous connection is still tearing down. Adopt this fresh
+                # socket instead of rejecting it, so a retry is never bounced
+                # with "already streaming" while the old one unwinds.
+                old = link["socket"]
+                link["socket"] = ws
+                try:
+                    old.send(json.dumps({"type": "error",
+                                         "message": "replaced by a new connection"}))
+                    old.close()
+                except Exception:
+                    pass
+            else:
+                link["socket"] = ws
             if not link.get("camera_id"):
                 link["status"] = "awaiting_confirm"
                 _persist_links()

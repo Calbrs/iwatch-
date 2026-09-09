@@ -40,6 +40,7 @@
         var stream = null;
         var ws = null;
         var timer = null;
+        var retryTimer = null;
         var framesSent = 0;
         var streaming = false;
         var approved = false;
@@ -72,6 +73,7 @@
             ws = new WebSocket(wsUrl());
             ws.binaryType = "arraybuffer";
             ws.onopen = function () {
+                if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
                 setStatus("Connected — waiting for the host to approve this camera for tracking...");
                 setCamStatus("Live preview — waiting for host approval before streaming.");
             };
@@ -93,6 +95,7 @@
                 streaming = false;
                 approved = false;
                 if (timer) { clearInterval(timer); timer = null; }
+                if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
                 checkLink().then(function (d) {
                     if (d === null) {
                         invalid = true;
@@ -100,8 +103,11 @@
                         setCamStatus("Camera is still available but cannot stream anymore.");
                         return;
                     }
-                    setStatus("Disconnected — retrying in 3 seconds...");
-                    setTimeout(connect, 3000);
+                    // One quiet handshake at a time: wait 30 s before trying
+                    // again so a slow/disrupted connection is never cancelled
+                    // by an overlapping retry.
+                    setStatus("Disconnected — retrying in 30 seconds...");
+                    retryTimer = setTimeout(connect, 30000);
                 });
             };
             ws.onerror = function () {
