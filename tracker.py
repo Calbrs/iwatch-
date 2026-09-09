@@ -278,12 +278,30 @@ class PresenceFilter:
         return result
 
 
+# Live-preview pacing.
+# The linked phone may capture/send faster than the receiving browser can play
+# (e.g. 35 frames in vs 30 frames out). Queueing those surplus frames makes the
+# feed lag further and further behind real time. Instead we publish and stream
+# at a fixed PREVIEW_FPS and DROP any frames published in between, so playback
+# always stays at the consumer's pace (same principle WhatsApp/WebRTC use).
+PREVIEW_FPS = max(1.0, float(os.environ.get("PREVIEW_FPS", "30")))
+_MIN_PREVIEW_INTERVAL = 1.0 / PREVIEW_FPS
+_RAW_PREVIEW_QUALITY = float(os.environ.get("CLOUD_PREVIEW_QUALITY", "0.82"))
+PREVIEW_JPEG_QUALITY = max(1, min(95, int(_RAW_PREVIEW_QUALITY * 100 + 0.5)))
+
+
 def publish_preview(camera_id, frame):
     """Share a REAL rendered frame for a camera with the preview stream.
 
     This frame is never persisted — used live only. A new frame simply
     overwrites the previous one in memory, and marks the camera as live/connected.
     The version counter lets the MJPEG generator skip work when nothing changed.
+
+    Publishing stores the newest frame into a single latest-wins slot — a new
+    frame simply overwrites the previous one, and the generator reads whatever is
+    there when it is ready to emit. Intermediate frames are consequently dropped
+    at the consumer side while NO queue ever builds, so playback stays live even
+    when the phone captures faster than the browser can play (e.g. 35 vs 30 fps).
     """
     with preview_lock:
         preview_frames[camera_id] = frame.copy()
@@ -1004,43 +1022,56 @@ def api_detections():
 def preview_generator(camera_id):
     """Yield MJPEG frames of one camera's latest rendered preview frame.
 
-    This frame is never persisted — encoded to JPEG in memory and
-    streamed live to the browser. Frames are only re-encoded and re-sent
-    when a NEW preview frame has been published, so the browser always gets
-    the freshest frame and the server does not waste CPU on duplicates.
+    This frame is never persisted — encoded to JPEG in memory and streamed
+    live to the browser. Output is paced to PREVIEW_FPS (the consumer's rate):
+    a newer frame is only served when one is actually available and the pacing
+    interval has passed, and intermediate frames are dropped rather than
+    buffered — so playback stays smooth/live even when the phone captures
+    faster than the browser can play (e.g. 35 vs 30 fps). When the camera has
+    no feed at all, a "No feed" placeholder is served once, not in a hot loop.
     """
     last_version = -1
+    last_sent = 0.0
+    showed_placeholder = False
+    placeholder = None
+
     while True:
+        now = time.time()
+        wait = (last_sent + _MIN_PREVIEW_INTERVAL) - now
+        if wait > 0:
+            time.sleep(min(wait, 0.1))
+
         with preview_lock:
             version = preview_versions.get(camera_id, 0)
-            frame = preview_frames.get(camera_id)
-            if version == last_version:
-                frame = None
-            else:
-                last_version = version
-                if frame is not None:
-                    frame = frame.copy()
+            live_frame = preview_frames.get(camera_id)
+            if live_frame is not None:
+                live_frame = live_frame.copy()
 
-        if frame is None:
-            with preview_lock:
-                if preview_frames.get(camera_id) is None:
-                    frame = np.zeros((480, 640, 3), dtype=np.uint8)
-                    cv2.putText(frame, "No feed", (20, 240),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1.0,
-                                (255, 255, 255), 2)
-                    last_version = -1
-                else:
-                    time.sleep(0.03)
-                    continue
+        if live_frame is not None and version != last_version:
+            frame = live_frame
+            last_version = version
+            showed_placeholder = False
+            placeholder = None
+        elif live_frame is None and not showed_placeholder:
+            if placeholder is None:
+                placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
+                cv2.putText(placeholder, "No feed", (20, 240),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+            frame = placeholder
+            showed_placeholder = True
+        else:
+            time.sleep(0.02)
+            continue
 
-        ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 82])
+        ok, jpeg = cv2.imencode(
+            ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, PREVIEW_JPEG_QUALITY])
         if not ok:
-            time.sleep(0.03)
+            time.sleep(0.02)
             continue
 
         yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" +
                jpeg.tobytes() + b"\r\n")
-        time.sleep(0.005)
+        last_sent = time.time()
 
 
 @app.route("/api/video_preview/<camera_id>")
