@@ -385,6 +385,16 @@ def camera_loop(cam, stop_event):
 
             frame_count += 1
 
+            # Redraw badges from the last detection round, then publish the
+            # frame IMMEDIATELY. Detection (YOLO) is the slowest step on the
+            # box; if we published only after it finished, the preview would be
+            # a full detection-cycle (often 150-400 ms) behind the live scene.
+            # Publishing first means the viewer always gets the freshest frame
+            # and badges simply lag one detection round behind.
+            for name, box in current_badges.items():
+                _draw_name_badge(frame, name, box)
+            publish_preview(camera_id, frame)
+
             if frame_count % frame_skip == 0:
                 try:
                     results = None
@@ -459,16 +469,12 @@ def camera_loop(cam, stop_event):
                     if det_errors <= 3 or det_errors % 100 == 0:
                         print(f"ERROR camera '{camera_id}' detection: {exc}")
                         traceback.print_exc()
+                    if det_errors >= 3:
+                        current_badges = {}
                     time.sleep(0.02)
             else:
                 time.sleep(0.01)
 
-            # Redraw every frame from the last tracked positions, so the badge
-            # follows the doctor smoothly even between detection rounds.
-            for name, box in current_badges.items():
-                _draw_name_badge(frame, name, box)
-
-            publish_preview(camera_id, frame)
             consecutive_errors = 0
         except Exception as exc:
             consecutive_errors += 1
