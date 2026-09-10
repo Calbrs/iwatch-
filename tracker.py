@@ -503,7 +503,7 @@ def camera_loop(cam, stop_event):
 
                     # MARK engine: associate detections into persistent tracks,
                     # then run identity + adaptive learning per matched track.
-                    mark = MARK_MANAGER
+                    # Tracks are per-camera; identities live in the shared bank.
                     active = mark.update(
                         [b.xyxy[0].cpu().numpy() for b in persons], t=time.time())
 
