@@ -36,8 +36,9 @@ from flask import Flask, Response, abort, jsonify, render_template, request
 from simple_websocket import ConnectionClosed, Server
 from ultralytics import YOLO
 
-from appearance import compute_torso_histogram, match_profile_candidates, sanitize_filename
-from tracking import TrackManager
+from appearance import compute_torso_histogram, sanitize_filename
+from mark import (CONFIRMED, UNCERTAIN, IdentityBank, MarkManager,
+                  _scale_label, mark_config, quality_gate)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
@@ -192,6 +193,24 @@ def _load_links():
 
 CONFIG = {}
 MODEL = None
+
+# MARK engine (constructed once in main() before camera threads start).
+MARK_MANAGER = None
+
+# Serializes template-bank writes across camera threads (rare, atexit, etc.).
+MARK_SAVE_LOCK = threading.Lock()
+MARK_LEARN_COUNT = [0]
+
+
+def _mark_persist(names=None):
+    """Persist the template bank (thread-safe, best-effort)."""
+    if MARK_MANAGER is None:
+        return
+    with MARK_SAVE_LOCK:
+        try:
+            MARK_MANAGER.bank.save_dir(PROFILES_DIR, names=names)
+        except Exception as exc:
+            print(f"WARNING: MARK bank persist failed: {exc}")
 
 STATE_OUT = "OUT_OF_ZONE"
 STATE_ENTERING = "ENTERING"
@@ -390,6 +409,7 @@ def camera_loop(cam, stop_event):
     This frame is never persisted — used live only.
     """
     camera_id = cam["id"]
+    global MARK_MANAGER
     print(f"DEBUG camera_loop STARTED for {camera_id}")
     polygon = np.array(cam["chair_zone_polygon"], dtype=np.int32)
     zone_fitted = False
@@ -401,18 +421,15 @@ def camera_loop(cam, stop_event):
         print(f"ERROR: remote source '{camera_id}' is missing.")
         return
 
-    identity_params = dict(
-        threshold=CONFIG["appearance_match_threshold"],
-        window=CONFIG.get("tracking_window", 10),
-        commit_frac=CONFIG.get("tracking_commit_frac", 0.5),
-        release_frac=CONFIG.get("tracking_release_frac", 0.3),
-        start_gate=CONFIG.get("tracking_start_gate", 4),
-    )
-    tracker = TrackManager(
-        identity_params=identity_params,
-        max_lost=CONFIG.get("tracking_max_lost", 10),
-    )
+    if MARK_MANAGER is None:
+        _cfg = mark_config(CONFIG)
+        _bank = IdentityBank(_cfg)
+        _bank.load_dir(PROFILES_DIR)
+        MARK_MANAGER = MarkManager(_cfg, _bank)
     presence_filter = PresenceFilter(min_hits=2, max_misses=3)
+    # Tracks are per-camera: one MarkManager PER camera thread, sharing the
+    # same global identity bank (identities are cross-camera; tracks are not).
+    mark = MarkManager(MARK_MANAGER.cfg, MARK_MANAGER.bank)
     current_badges = {}
     frame_count = 0
     det_errors = 0
@@ -475,22 +492,52 @@ def camera_loop(cam, stop_event):
                         cv2.imwrite(f"/tmp/debug_frames/{camera_id}_frame{frame_count}.jpg", frame)
                         print(f"DEBUG saved frame {camera_id}_frame{frame_count}.jpg shape={frame.shape}")
 
-                    with profile_lock:
-                        profs = PROFILES
-
-                    # Link frames into persistent tracklets first, so the boxes the
-                    # identities run on are stable across time and do not jump.
-                    active = tracker.update([b.xyxy[0].cpu().numpy() for b in persons])
+                    # MARK engine: associate detections into persistent tracks,
+                    # then run identity + adaptive learning per matched track.
+                    mark = MARK_MANAGER
+                    active = mark.update(
+                        [b.xyxy[0].cpu().numpy() for b in persons], t=time.time())
 
                     in_zone_names = set()
                     for t in active:
-                        cx, cy = t.centroid
-                        if not point_in_polygon((cx, cy), polygon):
+                        cx, cy = t.predicted_centroid
+                        t.in_zone = point_in_polygon((cx, cy), polygon)
+                        if not t.in_zone:
+                            continue
+                        if not t.should_recognize(frame_count):
+                            if t.identity:
+                                in_zone_names.add(t.identity)
                             continue
                         hist = compute_torso_histogram(frame, t.box, CONFIG)
-                        candidates = (match_profile_candidates(hist, profs, top_k=3)
-                                      if hist is not None else [])
-                        name = t.identity.observe(candidates)
+                        candidates = mark.bank.match(hist, top_k=3) if hist is not None else []
+                        name = t.observe(candidates, hist, frame_count)
+
+                        # Per-template performance bookkeeping on DECISION:
+                        # promote candidates, roll back misbehaving templates.
+                        if t.last_best is not None:
+                            best_name, _, best_tpl = t.last_best
+                            _correct = (t.identity == best_name)
+                            mark.bank.confirm_use(
+                                best_name, best_tpl, t.identity, _correct)
+
+                        # Adaptive learning: add a NEW safe observation to the
+                        # identity bank (multi-scale / multi-angle adaptation).
+                        if (hist is not None and t.identity and not t.occluded and
+                                t.state in (CONFIRMED, UNCERTAIN)):
+                            q, qok = quality_gate(frame, t.box, mark.cfg)
+                            if qok:
+                                stable = t.stable_learning_window(t.identity)
+                                if (stable >= mark.cfg["learn_min_frames"] and
+                                        t.identity_conf >= mark.cfg["learn_identity_conf_min"]):
+                                    scale = _scale_label(t.box, frame.shape[0])
+                                    if mark.bank.learn(t.identity, hist, scale,
+                                                       q, t.identity_conf):
+                                        print(f"MARK: learned new '{t.identity}' "
+                                              f"template ({scale}, q={q:.2f}, "
+                                              f"conf={t.identity_conf:.2f}, box={[int(v) for v in t.box]})")
+                                        MARK_LEARN_COUNT[0] += 1
+                                        if MARK_LEARN_COUNT[0] % 25 == 0:
+                                            _mark_persist()
                         if name:
                             in_zone_names.add(name)
 
@@ -499,12 +546,12 @@ def camera_loop(cam, stop_event):
                     presence = presence_filter.update(in_zone_names)
                     publish_presence(camera_id, presence)
 
-                    # Badge boxes come from smooth tracklets and persist through
-                    # the short debounce window above even if a frame is dropped.
+                    # Badge boxes come from MARK's smoothed/predicted position,
+                    # and survive the short debounce so badges never jump.
                     current_badges = {
-                        t.identity.name: t.box
-                        for t in tracker.tracks.values()
-                        if t.identity.name in presence
+                        t.identity: t.badge_box
+                        for t in mark.tracks.values()
+                        if t.identity in presence
                     }
 
                     # Share the latest detection boxes so the fast socket-thread
@@ -601,6 +648,10 @@ def finalize_enrollment(job):
 
     with profile_lock:
         PROFILES = load_profiles_from_disk()
+
+    if MARK_MANAGER is not None:
+        MARK_MANAGER.bank.upsert_enrolled(job["name"], mean_hist)
+    _mark_persist(names=[job["name"]])
 
     with state_lock:
         if job["name"] not in states:
@@ -1448,6 +1499,11 @@ def api_doctor_delete():
         if safe in PROFILES:
             del PROFILES[safe]
             removed = True
+
+    if removed and MARK_MANAGER is not None:
+        MARK_MANAGER.bank.forget(safe)
+        MARK_MANAGER.forget_track_identity(safe)
+
     if os.path.exists(path):
         try:
             os.remove(path)
@@ -1504,6 +1560,24 @@ def main():
               "Use the web UI (/enroll) or enroll.py to add doctors.")
 
     MODEL = YOLO("yolov8n.pt")
+
+    # MARK engine: build the identity template bank from enrolled profiles and
+    # hand every camera thread the same adaptive tracking/identity layer.
+    global MARK_MANAGER
+    mark_cfg = mark_config(config)
+    bank = IdentityBank(mark_cfg)
+    bank.load_dir(PROFILES_DIR)
+    MARK_MANAGER = MarkManager(mark_cfg, bank)
+    print(f"MARK initialized: {len(bank.identities)} identity(ies), "
+          f"{sum(len(b['protected'] + b['templates']) for b in bank.identities.values())} "
+          f"templates")
+
+    def _save_mark_on_exit():
+        _mark_persist()
+        print("MARK: template bank saved on exit.")
+
+    import atexit
+    atexit.register(_save_mark_on_exit)
 
     # Boot the wired (webcam / RTSP) cameras declared in config.json so they
     # appear in the feeds/enroll lists and run the tracking pipeline from the
