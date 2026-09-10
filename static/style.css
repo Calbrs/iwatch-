@@ -204,6 +204,81 @@ nav {
     font-size: 12px;
 }
 
+.people-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 8px;
+}
+
+.people-card {
+    background-color: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 14px 16px;
+    flex: 1 1 260px;
+    max-width: 420px;
+}
+
+.people-card.known {
+    border-left: 4px solid #22c55e;
+}
+
+.people-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+
+.people-tag {
+    color: #052e14;
+    font-weight: 700;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 13px;
+}
+
+.people-state {
+    font-size: 12px;
+    color: #94a3b8;
+    letter-spacing: 0.5px;
+}
+
+.people-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 13px;
+    color: #cbd5e1;
+}
+
+.people-assign {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.people-assign input {
+    padding: 7px 10px;
+    background-color: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    color: #e2e8f0;
+    font-size: 13px;
+}
+
+.people-assign button {
+    padding: 7px 12px;
+    background-color: #22c55e;
+    border: none;
+    border-radius: 6px;
+    color: #052e14;
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+}
+
 .field {
     margin-bottom: 16px;
 }

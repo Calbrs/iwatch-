@@ -28,6 +28,17 @@
            page, open it on the camera device, and approve it there.</p>
     </section>
 
+    <section id="detected">
+        <h2>Detected People <span class="badge">REGISTER</span></h2>
+        <p class="preview-note">MARK tracks every person automatically. Grey
+           <code>unknown_####</code> tags are provisional — nobody is ever named without
+           your explicit action below. Select an <code>unknown_####</code>, enter a name,
+           and its collected views become that person's registration profile.</p>
+        <div id="people-grid" class="people-grid">
+            <p class="loading">Waiting for camera feeds...</p>
+        </div>
+    </section>
+
     <script>
         function renderCameras(cameras) {
             var grid = document.getElementById("preview-grid");
@@ -59,8 +70,72 @@
                 .catch(function (e) { console.error(e); });
         }
 
+        function renderPeople(tracks) {
+            var grid = document.getElementById("people-grid");
+            if ((tracks || []).length === 0) {
+                grid.innerHTML = '<p class="loading">No people being tracked yet.</p>';
+                return;
+            }
+            grid.innerHTML = "";
+            tracks.sort(function (a, b) {
+                return (b.assignable ? 1 : 0) - (a.assignable ? 1 : 0);
+            });
+            tracks.forEach(function (t) {
+                var card = document.createElement("div");
+                card.className = "people-card" + (t.known ? " known" : "");
+                var color = t.known ? "green" : "#6b7280";
+                card.innerHTML =
+                    '<div class="people-head">' +
+                    '  <span class="people-tag" style="background:' + color + '">' +
+                    (t.known ? t.identity : t.tag) + '</span>' +
+                    '  <span class="people-state">' + t.state + '</span>' +
+                    '</div>' +
+                    '<div class="people-meta">' +
+                    '  <span>Camera: ' + t.camera_id + '</span>' +
+                    '  <span>Confidence: ' + t.confidence + '</span>' +
+                    '  <span>Observations: ' + t.observations + '</span>' +
+                    '  <span>Quality: ' + t.quality + '</span>' +
+                    '  <span>Views: ' + JSON.stringify(t.views || {}) + '</span>' +
+                    '</div>';
+                if (!t.known && t.assignable) {
+                    card.innerHTML +=
+                        '<div class="people-assign">' +
+                        '  <input id="name-' + t.tag + '" placeholder="Doctor name" ' +
+                        '    style="flex:1;min-width:120px">' +
+                        '  <button onclick="assignPerson(\'' + t.camera_id + '\',\'' +
+                        t.tag + '\')">Assign identity</button>' +
+                        '</div>';
+                }
+                grid.appendChild(card);
+            });
+        }
+
+        function assignPerson(cameraId, tag) {
+            var input = document.getElementById("name-" + tag);
+            var name = (input ? input.value : "").trim();
+            if (!name) { alert("Enter a doctor name first."); return; }
+            fetch("/api/assign", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ camera_id: cameraId, tag: tag, name: name })
+            }).then(function (r) { return r.json(); }).then(function (j) {
+                if (j.ok) { alert(j.tag + " -> " + j.name + " (" + j.observations +
+                    " observations, " + j.templates + " templates)"); }
+                else { alert("Assign failed: " + (j.message || "unknown error")); }
+            }).catch(function (e) { alert("Assign error: " + e); });
+        }
+
+        function refreshPeople() {
+            fetch("/api/tracks")
+                .then(function (r) { return r.json(); })
+                .then(renderPeople)
+                .catch(function (e) { console.error(e); });
+        }
+
         refreshCameras();
         setInterval(refreshCameras, 10000);
+        refreshPeople();
+        setInterval(refreshPeople, 3000);
     </script>
 </body>
 </html>

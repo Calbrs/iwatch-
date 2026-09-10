@@ -41,6 +41,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 SEARCH = "SEARCH"
 TENTATIVE = "TENTATIVE"
+STABLE_UNKNOWN = "STABLE_UNKNOWN"
 CONFIRMED = "CONFIRMED"
 UNCERTAIN = "UNCERTAIN"
 RECOVERING = "RECOVERING"
@@ -61,6 +62,10 @@ MARK_DEFAULTS = {
     "motion_alpha": 0.35,
     "reid_gate": 0.20,             # IoU vs a re-id track's PREDICTED box to re-attach
     "reid_distance": 120.0,        # px; centre-distance gate for recovery re-id
+    # automatic discovery / registration
+    "stable_frames": 12,           # matched frames before a tag is STABLE_UNKNOWN
+    "max_observations": 200,       # per-unknown-track observation ceiling
+    "unknown_reid_threshold": 0.28,# dist; strong match to a remembered unknown tag
     # identity state machine
     "match_threshold": 0.35,       # Bhattacharyya; above this = unknown
     "confirm_conf": 0.55,          # fused confidence needed to CONFIRM
@@ -206,8 +211,80 @@ class IdentityBank:
 
     def __init__(self, cfg):
         self.cfg = cfg
-        self.identities = {}   # name -> {"protected": [hist], "templates": [Template]}
+        self.identities = {}      # name -> {"protected": [hist], "templates": [Template]}
+        self.unknown_memory = {}  # "unknown_0001" -> [hist, ...] (bounded, session)
+        self._tag_seq = 0
         self._lock = threading.RLock()
+
+    # ---- automatic discovery -------------------------------------------------
+    def new_unknown_tag(self):
+        with self._lock:
+            self._tag_seq += 1
+            return f"unknown_{self._tag_seq:04d}"
+
+    def remember_unknown(self, tag, hist, limit=60):
+        with self._lock:
+            bucket = self.unknown_memory.setdefault(tag, [])
+            if bucket and min(bhattacharyya(hist, h) for h in bucket) < 0.15:
+                return
+            bucket.append(hist)
+            if len(bucket) > limit:
+                del bucket[:len(bucket) - limit]
+
+    def best_unknown(self, hist, limit=80):
+        """Re-identification for unassigned people: find a remembered unknown
+        tag whose appearance strongly matches. Returns (tag, dist) or None."""
+        if hist is None:
+            return None
+        best_tag, best_dist = None, 2.0
+        with self._lock:
+            for tag, hists in self.unknown_memory.items():
+                d = min(bhattacharyya(hist, h) for h in hists[:limit])
+                if d < best_dist:
+                    best_tag, best_dist = tag, d
+        if best_tag is not None and best_dist <= self.cfg["unknown_reid_threshold"]:
+            return best_tag, best_dist
+        return None
+
+    def forget_unknown(self, tag):
+        with self._lock:
+            self.unknown_memory.pop(tag, None)
+
+    def create_identity(self, name, observations, top_trusted=4):
+        """Build a brand-new identity profile from a track's collected
+        observations (auto-discovery assignment).
+
+        The single best observation becomes the protected enrollment template;
+        the next best validated ones become trusted; the rest become candidates
+        awaiting live validation. Frames are never stored — histograms only.
+        Returns True on success, False if there is nothing usable.
+        """
+        if not observations:
+            return False
+        cfg = self.cfg
+        scored = sorted(
+            [o for o in observations
+             if o.get("hist") is not None and o.get("valid", True)],
+            key=lambda o: o.get("confidence", 0.0),
+            reverse=True)
+        if not scored:
+            return False
+        with self._lock:
+            old = self.identities.get(name)
+            if old is not None:
+                return False
+            protected = scored[0]["hist"]
+            bucket = {"protected": [protected], "templates": []}
+            for o in scored[1:]:
+                state = "trusted" if len(bucket["templates"]) < top_trusted else "candidate"
+                tpl = Template(o["hist"], o.get("scale", "medium"),
+                               o.get("quality", 0.5), o.get("confidence", 0.5),
+                               state=state)
+                bucket["templates"].append(tpl)
+                if len(bucket["templates"]) >= cfg["learn_max_templates"]:
+                    break
+            self.identities[name] = bucket
+        return True
 
     # ---- loading / persistence -------------------------------------------------
     def load_dir(self, profiles_dir):
@@ -444,8 +521,53 @@ class MarkTrack:
         self.typical_h = None      # EMA of historical box height (for occlusion)
         self._learn_seen = collections.Counter()  # name -> stable frame count
         self.last_recognized = 0
+        # automatic discovery / registration
+        self.tag = None                     # "unknown_0001" until assigned
+        self.observations = collections.deque(
+            maxlen=int(cfg.get("max_observations", 200)))
+        self.views = collections.Counter()  # (scale, view) -> count
+        self.obs_best_q = 0.0
+        self.obs_best_conf = 0.0
         if t is not None:
             self.motion.update(self.box, t)
+
+    # ---- observation collection (auto-discovery) ---------------------------
+    def view_label(self):
+        """Coarse pose/view guess from the torso aspect ratio."""
+        w = self.box[2] - self.box[0]
+        h = self.box[3] - self.box[1]
+        if h <= 0:
+            return "frontal"
+        r = w / max(1.0, h)
+        if r < 0.35:
+            return "profile"
+        if r >= 0.6:
+            return "frontal"
+        return "threequarter"
+
+    def add_observation(self, hist, scale, quality, confidence, t, frame_count):
+        """Quality + novelty-gated automatic observation for this unknown track.
+
+        No near-duplicates are stored, so the admin ends up with diverse
+        views/scales instead of hundreds of identical frames. Returns True if
+        a new observation was accepted.
+        """
+        if hist is None or not scale:
+            return False
+        for o in self.observations:
+            if bhattacharyya(hist, o["hist"]) < 0.12:
+                return False
+        self.observations.append({
+            "ts": t, "frame": frame_count,
+            "bbox": [float(v) for v in self.box],
+            "hist": hist, "scale": scale,
+            "view": self.view_label(),
+            "quality": quality, "confidence": confidence, "valid": True,
+        })
+        self.views[(scale, self.view_label())] += 1
+        self.obs_best_q = max(self.obs_best_q, quality)
+        self.obs_best_conf = max(self.obs_best_conf, confidence)
+        return True
 
     # ---- geometry -----------------------------------------------------------
     @property
@@ -512,8 +634,10 @@ class MarkTrack:
             self.state = LOST
         elif self.state == RECOVERING and self.lost >= cfg["recover_max_lost"]:
             self.state = LOST
-        elif self.state in (TENTATIVE, SEARCH):
-            if self.lost >= cfg["tentative_max_lost"]:
+        elif self.state in (STABLE_UNKNOWN, TENTATIVE, SEARCH):
+            limit = (cfg["tentative_max_lost"] if self.state in (TENTATIVE, SEARCH)
+                     else cfg["recover_max_lost"])
+            if self.lost >= limit:
                 self.state = LOST
         elif self.state == LOST and self.lost >= cfg["terminate_lost"]:
             self.state = TERMINATED
@@ -691,6 +815,11 @@ class MarkManager:
                     trk.state = CONFIRMED if trk.identity else TENTATIVE
                 if trk.state == TENTATIVE and trk.identity:
                     trk.state = CONFIRMED
+                # automatic discovery: promote to STABLE_UNKNOWN after enough
+                # consistent matched frames (still never auto-assigns identity)
+                if (trk.state == TENTATIVE and trk.identity is None and
+                        trk.matched >= cfg["stable_frames"]):
+                    trk.state = STABLE_UNKNOWN
                 active.append(trk)
             else:
                 trk.mark_lost()
@@ -701,6 +830,7 @@ class MarkManager:
             trk = MarkTrack(self.next_id, dets[i], cfg, t)
             self.next_id += 1
             self.tracks[trk.id] = trk
+            trk.tag = self.bank.new_unknown_tag()
             active.append(trk)
 
         for tid in [tid for tid, trk in list(self.tracks.items())
@@ -716,6 +846,20 @@ class MarkManager:
                 trk.identity = None
                 trk.identity_conf = 0.0
                 trk.votes.clear()
+
+    def maybe_reid_unknown(self, trk, hist):
+        """Re-identification for UNASSIGNED people: when a fresh track's
+        appearance strongly matches a remembered unknown tag, reuse that tag
+        instead of minting a new unknown_XXXX (no duplicate unknowns)."""
+        if trk.identity is not None or hist is None:
+            return trk.tag
+        res = self.bank.best_unknown(hist)
+        if res is not None:
+            tag, _d = res
+            if trk.tag != tag:
+                self.bank.forget_unknown(trk.tag)
+                trk.tag = tag
+        return trk.tag
 
 
 def quality_gate(frame, box, cfg):

@@ -37,8 +37,8 @@ from simple_websocket import ConnectionClosed, Server
 from ultralytics import YOLO
 
 from appearance import compute_torso_histogram, sanitize_filename
-from mark import (CONFIRMED, UNCERTAIN, IdentityBank, MarkManager,
-                  _scale_label, mark_config, quality_gate)
+from mark import (CONFIRMED, STABLE_UNKNOWN, UNCERTAIN, IdentityBank,
+                  MarkManager, _scale_label, mark_config, quality_gate)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
@@ -74,6 +74,7 @@ preview_versions = {}
 
 badge_lock = threading.Lock()
 latest_badges = {}
+latest_unknown_badges = {}
 
 LIVE_AFTER_SECONDS = 4.0
 
@@ -196,6 +197,8 @@ MODEL = None
 
 # MARK engine (constructed once in main() before camera threads start).
 MARK_MANAGER = None
+TRACK_MANAGERS = {}       # camera_id -> MarkManager (per-camera track scope)
+TRACK_MANAGERS_LOCK = threading.Lock()
 
 # Serializes template-bank writes across camera threads (rare, atexit, etc.).
 MARK_SAVE_LOCK = threading.Lock()
@@ -430,7 +433,10 @@ def camera_loop(cam, stop_event):
     # Tracks are per-camera: one MarkManager PER camera thread, sharing the
     # same global identity bank (identities are cross-camera; tracks are not).
     mark = MarkManager(MARK_MANAGER.cfg, MARK_MANAGER.bank)
+    with TRACK_MANAGERS_LOCK:
+        TRACK_MANAGERS[camera_id] = mark
     current_badges = {}
+    unknown_badges = {}
     frame_count = 0
     det_errors = 0
 
@@ -470,6 +476,8 @@ def camera_loop(cam, stop_event):
             # and badges simply lag one detection round behind.
             for name, box in current_badges.items():
                 _draw_name_badge(frame, name, box)
+            for tag, box in unknown_badges.items():
+                _draw_tag_badge(frame, tag, box)
             publish_preview(camera_id, frame)
 
             if frame_count % frame_skip == 0:
@@ -538,6 +546,25 @@ def camera_loop(cam, stop_event):
                                         MARK_LEARN_COUNT[0] += 1
                                         if MARK_LEARN_COUNT[0] % 25 == 0:
                                             _mark_persist()
+
+                        # Automatic discovery (unknown tracks): never assign an
+                        # identity, but selectively collect good, diverse
+                        # observations so the admin can register the person
+                        # from what MARK already saw.
+                        elif t.identity is None and not t.occluded:
+                            if t.tag is None:
+                                t.tag = mark.bank.new_unknown_tag()
+                            mark.maybe_reid_unknown(t, hist)
+                            q, qok = quality_gate(frame, t.box, mark.cfg)
+                            if qok and t.state in (STABLE_UNKNOWN, TENTATIVE, CONFIRMED):
+                                scale = _scale_label(t.box, frame.shape[0])
+                                if t.add_observation(hist, scale, q, q,
+                                                     time.time(), frame_count):
+                                    mark.bank.remember_unknown(t.tag, hist)
+                                    if frame_count % 30 == 1:
+                                        print(f"DISCOVERY {camera_id}: {t.tag} "
+                                              f"obs so far={len(t.observations)} "
+                                              f"views={dict(list(t.views.items())[:8])}")
                         if name:
                             in_zone_names.add(name)
 
@@ -553,6 +580,14 @@ def camera_loop(cam, stop_event):
                         for t in mark.tracks.values()
                         if t.identity in presence
                     }
+                    # Unassigned people get a discreet grey tag (no identity is
+                    # ever auto-assigned — this is purely for the admin to spot
+                    # and register them from the live feed).
+                    unknown_badges = {
+                        t.tag: t.badge_box
+                        for t in mark.tracks.values()
+                        if t.state == STABLE_UNKNOWN and t.in_zone and t.tag
+                    }
 
                     # Share the latest detection boxes so the fast socket-thread
                     # publisher can draw the green badges on every preview frame
@@ -560,6 +595,7 @@ def camera_loop(cam, stop_event):
                     # by the next raw frame arriving from the device).
                     with badge_lock:
                         latest_badges[camera_id] = dict(current_badges)
+                        latest_unknown_badges[camera_id] = dict(unknown_badges)
 
                     if presence and frame_count % 30 == 1:
                         print(f"TRACKED {camera_id} in-zone: {sorted(presence)} "
@@ -617,7 +653,8 @@ def camera_loop(cam, stop_event):
                 break
 
 
-def _draw_name_badge(frame, name, box):
+def _draw_name_badge(frame, name, box, color=(34, 197, 94),
+                     text_color=(5, 46, 15)):
     """Draw a stable green name badge for a tracked doctor on the live feed."""
     sx1, sy1, sx2, sy2 = map(int, box)
     (tw, th), _ = cv2.getTextSize(name, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
@@ -625,9 +662,14 @@ def _draw_name_badge(frame, name, box):
     by1 = max(16, sy1 - th - 16)
     bx2 = bx1 + tw + 12
     by2 = by1 + th + 10
-    cv2.rectangle(frame, (bx1, by1), (bx2, by2), (34, 197, 94), -1)
+    cv2.rectangle(frame, (bx1, by1), (bx2, by2), color, -1)
     cv2.putText(frame, name, (bx1 + 6, by2 - 6),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (5, 46, 15), 2)
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, text_color, 2)
+
+
+def _draw_tag_badge(frame, tag, box):
+    """Discreet grey badge for an unassigned (unknown_XXXX) tracked person."""
+    _draw_name_badge(frame, tag, box, color=(107, 114, 128), text_color=(24, 24, 27))
 
 
 def finalize_enrollment(job):
@@ -1275,6 +1317,8 @@ def ws_cam(code):
                 with badge_lock:
                     for name, box in latest_badges.get(cam_id, {}).items():
                         _draw_name_badge(img, name, box)
+                    for tag, box in latest_unknown_badges.get(cam_id, {}).items():
+                        _draw_tag_badge(img, tag, box)
                 publish_preview(cam_id, img)
 
             with link_lock:
@@ -1317,6 +1361,132 @@ def ws_cam(code):
                 _persist_links()
     _log_stream("ws_close", code=code)
     return ""
+
+
+@app.route("/api/tracks")
+def api_tracks():
+    """Auto-discovery: every active tracked person per camera, including
+    unassigned temporary identities (unknown_XXXX) with their collected
+    observations and view/scale diversity."""
+    results = []
+    with TRACK_MANAGERS_LOCK:
+        managers = list(TRACK_MANAGERS.items())
+    for camera_id, mark in managers:
+        with profile_lock:
+            known = set(PROFILES)
+        for t in mark.tracks.values():
+            if t.state in ("TERMINATED", "LOST") or t.state == "SEARCH":
+                continue
+            scales = {}
+            views = {}
+            for (scale, view), cnt in t.views.items():
+                scales[scale] = scales.get(scale, 0) + cnt
+                views[view] = views.get(view, 0) + cnt
+            results.append({
+                "camera_id": camera_id,
+                "tag": t.tag,
+                "identity": t.identity,
+                "known": t.identity in known if t.identity else False,
+                "state": t.state,
+                "confidence": round(t.identity_conf, 2),
+                "box": [round(v, 1) for v in t.badge_box],
+                "in_zone": t.in_zone,
+                "observations": len(t.observations),
+                "quality": round(t.obs_best_q, 2),
+                "matched": t.matched,
+                "lost": t.lost,
+                "scales": scales,
+                "views": views,
+                "assignable": len(t.observations) >= 2,
+            })
+    return jsonify(results)
+
+
+@app.route("/api/assign", methods=["POST"])
+def api_assign():
+    """Assign a real identity to an unknown track. The track's collected
+    observations (quality + diversity filtered) become the person's initial
+    profile. Identity is ONLY ever set by this explicit admin action."""
+    data = request.get_json(silent=True) or {}
+    camera_id = (data.get("camera_id") or "").strip()
+    tag = (data.get("tag") or "").strip()
+    name = (data.get("name") or "").strip()
+
+    if not name:
+        return jsonify({"ok": False, "message": "Name is required."}), 400
+    if not camera_id or not tag:
+        return jsonify({"ok": False,
+                        "message": "camera_id and tag are required."}), 400
+
+    if MARK_MANAGER is None:
+        return jsonify({"ok": False, "message": "MARK not ready."}), 503
+
+    with TRACK_MANAGERS_LOCK:
+        mark = TRACK_MANAGERS.get(camera_id)
+    if mark is None:
+        return jsonify({"ok": False,
+                        "message": f"No active camera '{camera_id}'."}), 404
+
+    trk = next((t for t in mark.tracks.values() if t.tag == tag), None)
+    if trk is None:
+        return jsonify({"ok": False,
+                        "message": f"No tracked person '{tag}' on {camera_id}."}), 404
+
+    safe = sanitize_filename(name)
+    with profile_lock:
+        if safe in PROFILES:
+            return jsonify({"ok": False,
+                            "message": f"'{name}' is already enrolled."}), 409
+
+    observations = [dict(o) for o in trk.observations]
+    if not observations:
+        return jsonify({"ok": False,
+                        "message": "No usable observations collected yet; "
+                                   "keep the person in view a few more seconds."}), 400
+
+    bank = MARK_MANAGER.bank
+    ok = bank.create_identity(name, observations)
+    if not ok:
+        return jsonify({"ok": False,
+                        "message": "Not enough good observations to create a profile."}), 400
+
+    path = os.path.join(PROFILES_DIR, safe + ".json")
+    tpls = []
+    bucket = bank.identities[name]
+    for tpl in bucket["templates"]:
+        if tpl.state in ("protected", "trusted"):
+            tpls.append({
+                "hist": tpl.hist, "scale": tpl.scale,
+                "quality": tpl.quality, "conf": tpl.conf, "state": tpl.state,
+                "hits": tpl.hits, "bad_hits": tpl.bad_hits,
+            })
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"name": name, "histogram": bucket["protected"][0],
+                   "templates": tpls}, f)
+
+    # live-activate profile + state
+    with profile_lock:
+        PROFILES = load_profiles_from_disk()
+    with state_lock:
+        if name not in states:
+            states[name] = new_state()
+    with live_lock:
+        if name not in live_status:
+            live_status[name] = {"in_zone": False, "clock_in": None, "cameras": []}
+
+    # the track itself becomes the new identity immediately
+    trk.identity = name
+    trk.identity_conf = max(0.6, trk.obs_best_conf)
+    trk.state = CONFIRMED
+    trk.votes.clear()
+    trk.last_best = (name, 0.0, None)
+    bank.forget_unknown(tag)
+
+    print(f"ASSIGNED: {tag} -> {name} ({len(observations)} observations, "
+          f"{len(bucket['templates'])} templates)")
+    return jsonify({"ok": True, "name": name, "tag": tag,
+                    "observations": len(observations),
+                    "templates": len(tpls)})
 
 
 @app.route("/api/live_status")
