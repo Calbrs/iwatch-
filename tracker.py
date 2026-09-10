@@ -560,9 +560,16 @@ def camera_loop(cam, stop_event):
                         # observations so the admin can register the person
                         # from what MARK already saw.
                         elif t.identity is None and not t.occluded:
+                            # A tag is minted ONLY when the re-id probe fails for
+                            # a while. A returning person reuses their old tag as
+                            # soon as one good frame matches; waiting a few dozen
+                            # frames prevents a poor first frame from burning a
+                            # brand-new unknown_XXXX number.
                             if t.tag is None:
                                 t.tag = mark.maybe_reid_unknown(t, hist)
-                                if t.tag is None:
+                                if (t.tag is None and
+                                        (t.matched >= mark.cfg.get("unknown_mint_lag", 45)
+                                         or not mark.bank.unknown_memory)):
                                     t.tag = mark.bank.new_unknown_tag()
                             else:
                                 mark.maybe_reid_unknown(t, hist)
@@ -570,9 +577,9 @@ def camera_loop(cam, stop_event):
                             # Far views feed the re-id MEMORY (so a person who
                             # reappears far away still re-id's) even when they
                             # are not good enough for learning/registration.
-                            if hist is not None and quality_gate_lite(frame, t.box, mark.cfg):
+                            if t.tag and hist is not None and quality_gate_lite(frame, t.box, mark.cfg):
                                 mark.bank.remember_unknown(t.tag, hist)
-                            if qok and t.state in (STABLE_UNKNOWN, TENTATIVE, CONFIRMED):
+                            if t.tag and qok and t.state in (STABLE_UNKNOWN, TENTATIVE, CONFIRMED):
                                 scale = _scale_label(t.box, frame.shape[0])
                                 if t.add_observation(hist, scale, q, q,
                                                      time.time(), frame_count):

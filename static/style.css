@@ -204,6 +204,57 @@ nav {
     font-size: 12px;
 }
 
+.people-assign-bar {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+    padding: 10px 12px;
+    background-color: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.people-assign-bar select {
+    padding: 7px 10px;
+    background-color: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    color: #e2e8f0;
+    font-size: 13px;
+}
+
+.people-assign-bar input {
+    flex: 1 1 200px;
+    padding: 7px 10px;
+    background-color: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    color: #e2e8f0;
+    font-size: 13px;
+}
+
+.people-assign-bar input:focus {
+    border-color: #22c55e;
+    outline: none;
+}
+
+.people-assign-bar button {
+    padding: 7px 14px;
+    background-color: #22c55e;
+    border: none;
+    border-radius: 6px;
+    color: #052e14;
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.people-assign-bar button:hover {
+    background-color: #16a34a;
+}
+
 .people-grid {
     display: flex;
     flex-wrap: wrap;

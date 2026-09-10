@@ -65,8 +65,12 @@ MARK_DEFAULTS = {
     # automatic discovery / registration
     "stable_frames": 12,           # matched frames before a tag is STABLE_UNKNOWN
     "max_observations": 200,       # per-unknown-track observation ceiling
-    "unknown_reid_threshold": 0.34,# dist; strong match to a remembered unknown tag
+    "unknown_reid_threshold": 0.42,# dist; strong match to a remembered unknown tag
     "unknown_reid_margin": 0.03,   # dist gap required before swapping to another tag
+    "unknown_mint_lag": 45,        # frames to keep probing memory before minting a
+                                   #   brand-new tag for a tagless track (so a
+                                   #   returning person never gets a new number
+                                   #   just because the first frame was poor)
     "unknown_mem_min_box_h": 48.0, # smaller unknown crops still feed re-id memory
     "unknown_mem_sharp_frac": 0.15,# memory sharpness floor as a fraction of learning
     # identity state machine
@@ -226,6 +230,8 @@ class IdentityBank:
             return f"unknown_{self._tag_seq:04d}"
 
     def remember_unknown(self, tag, hist, limit=60):
+        if not tag or hist is None:
+            return
         with self._lock:
             bucket = self.unknown_memory.setdefault(tag, [])
             if bucket and min(bhattacharyya(hist, h) for h in bucket) < 0.15:
@@ -242,6 +248,8 @@ class IdentityBank:
         best_tag, best_dist = None, 2.0
         with self._lock:
             for tag, hists in self.unknown_memory.items():
+                if not tag:
+                    continue
                 d = min(bhattacharyya(hist, h) for h in hists[:limit])
                 if d < best_dist:
                     best_tag, best_dist = tag, d
