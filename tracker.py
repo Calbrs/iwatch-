@@ -614,13 +614,16 @@ def camera_loop(cam, stop_event):
                     }
                     # Unassigned people get a discreet grey tag (no identity is ever
                     # auto-assigned — this is purely for the admin to spot and
-                    # register them from the live feed). The badge survives
-                    # brief lost/recovering windows (badge_box holds the last
-                    # predicted position) so it does not flicker on relocate.
+                    # register them from the live feed). Tracks that already
+                    # carry an identity are excluded so the green name badge is
+                    # never overlaid by a lingering grey unknown_XXXX. The badge
+                    # survives brief lost/recovering windows (badge_box holds
+                    # the last predicted position) so it does not flicker on
+                    # relocate.
                     unknown_badges = {
                         t.tag: t.badge_box
                         for t in mark.tracks.values()
-                        if (t.tag and t.in_zone and
+                        if (t.tag and t.identity is None and t.in_zone and
                             t.lost < mark.cfg.get("terminate_lost", 30) and
                             t.state in (STABLE_UNKNOWN, TENTATIVE, CONFIRMED,
                                         RECOVERING, UNCERTAIN))
@@ -1484,19 +1487,34 @@ def api_assign():
         return jsonify({"ok": False,
                         "message": f"No tracked person '{tag}' on {camera_id}."}), 404
 
+    observations = [dict(o) for o in trk.observations]
+
+    bank = MARK_MANAGER.bank
     safe = sanitize_filename(name)
     with profile_lock:
-        if safe in PROFILES:
-            return jsonify({"ok": False,
-                            "message": f"'{name}' is already enrolled."}), 409
+        exists = safe in PROFILES
 
-    observations = [dict(o) for o in trk.observations]
+    if exists:
+        # The name is already an enrolled doctor: this is a confirmation that
+        # the unknown person IS that doctor. No new profile is created — the
+        # live recognition + adaptive learning enriches the existing profile
+        # over the following frames.
+        trk.identity = name
+        trk.identity_conf = max(0.6, trk.obs_best_conf)
+        trk.state = CONFIRMED
+        trk.votes.clear()
+        trk.last_best = (name, 0.0, None)
+        bank.forget_unknown(tag)
+        print(f"ASSIGNED (merge): {tag} -> {name} (existing profile)")
+        return jsonify({"ok": True, "name": name, "tag": tag,
+                        "observations": len(observations), "templates": 0,
+                        "merged": True})
+
     if not observations:
         return jsonify({"ok": False,
                         "message": "No usable observations collected yet; "
                                    "keep the person in view a few more seconds."}), 400
 
-    bank = MARK_MANAGER.bank
     ok = bank.create_identity(name, observations)
     if not ok:
         return jsonify({"ok": False,
