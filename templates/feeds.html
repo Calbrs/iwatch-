@@ -107,6 +107,12 @@
                         '</div>';
                 }
                 grid.appendChild(card);
+                // A card refresh must not wipe what you are typing.
+                var saved = pendingNames[t.tag];
+                if (saved) {
+                    var input = document.getElementById("name-" + t.tag);
+                    if (input) { input.value = saved; }
+                }
             });
         }
 
@@ -119,11 +125,20 @@
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ camera_id: cameraId, tag: tag, name: name })
             }).then(function (r) { return r.json(); }).then(function (j) {
-                if (j.ok) { alert(j.tag + " -> " + j.name + " (" + j.observations +
-                    " observations, " + j.templates + " templates)"); }
+                if (j.ok) {
+                    delete pendingNames[tag];
+                    alert(j.tag + " -> " + j.name + " (" + j.observations +
+                        " observations, " + j.templates + " templates)");
+                }
                 else { alert("Assign failed: " + (j.message || "unknown error")); }
             }).catch(function (e) { alert("Assign error: " + e); });
         }
+
+        var pendingNames = {};
+        document.addEventListener("input", function (ev) {
+            var el = ev.target;
+            if (el && /^name-/.test(el.id)) { pendingNames[el.id.slice(5)] = el.value; }
+        });
 
         function refreshPeople() {
             fetch("/api/tracks")

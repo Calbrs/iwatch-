@@ -37,9 +37,9 @@ from simple_websocket import ConnectionClosed, Server
 from ultralytics import YOLO
 
 from appearance import compute_torso_histogram, sanitize_filename
-from mark import (CONFIRMED, STABLE_UNKNOWN, TENTATIVE, UNCERTAIN,
+from mark import (CONFIRMED, RECOVERING, STABLE_UNKNOWN, TENTATIVE, UNCERTAIN,
                   IdentityBank, MarkManager, _scale_label, mark_config,
-                  quality_gate)
+                  quality_gate, quality_gate_lite)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
@@ -61,6 +61,12 @@ camera_presence = {}
 detection_log_lock = threading.Lock()
 _last_detection_log = {}
 DETECTION_LOG_INTERVAL = 10.0
+
+# Persist raw detection frames to /tmp/debug_frames for inspection ONLY when
+# explicitly enabled. Off by default: the pipeline never writes images for
+# privacy (only histogram vectors are stored anywhere).
+DEBUG_FRAMES = os.environ.get("DEBUG_FRAMES", "0").strip().lower() in (
+    "1", "true", "yes", "on")
 
 state_lock = threading.Lock()
 states = {}
@@ -494,8 +500,9 @@ def camera_loop(cam, stop_event):
                         print(f"DETECT {camera_id}: {len(persons)} person(s) "
                               f"(conf>={confidence}) frame={frame_count}")
 
-                    # DEBUG: save first frame every 1000 frames for inspection
-                    if frame_count % 1000 == 1:
+                    # DEBUG: optionally save first frame every 1000 frames for
+                    # inspection (opt-in via DEBUG_FRAMES=1; never by default).
+                    if frame_count % 1000 == 1 and DEBUG_FRAMES:
                         import os
                         os.makedirs("/tmp/debug_frames", exist_ok=True)
                         cv2.imwrite(f"/tmp/debug_frames/{camera_id}_frame{frame_count}.jpg", frame)
@@ -554,9 +561,17 @@ def camera_loop(cam, stop_event):
                         # from what MARK already saw.
                         elif t.identity is None and not t.occluded:
                             if t.tag is None:
-                                t.tag = mark.bank.new_unknown_tag()
-                            mark.maybe_reid_unknown(t, hist)
+                                t.tag = mark.maybe_reid_unknown(t, hist)
+                                if t.tag is None:
+                                    t.tag = mark.bank.new_unknown_tag()
+                            else:
+                                mark.maybe_reid_unknown(t, hist)
                             q, qok = quality_gate(frame, t.box, mark.cfg)
+                            # Far views feed the re-id MEMORY (so a person who
+                            # reappears far away still re-id's) even when they
+                            # are not good enough for learning/registration.
+                            if hist is not None and quality_gate_lite(frame, t.box, mark.cfg):
+                                mark.bank.remember_unknown(t.tag, hist)
                             if qok and t.state in (STABLE_UNKNOWN, TENTATIVE, CONFIRMED):
                                 scale = _scale_label(t.box, frame.shape[0])
                                 if t.add_observation(hist, scale, q, q,
@@ -581,13 +596,18 @@ def camera_loop(cam, stop_event):
                         for t in mark.tracks.values()
                         if t.identity in presence
                     }
-                    # Unassigned people get a discreet grey tag (no identity is
-                    # ever auto-assigned — this is purely for the admin to spot
-                    # and register them from the live feed).
+                    # Unassigned people get a discreet grey tag (no identity is ever
+                    # auto-assigned — this is purely for the admin to spot and
+                    # register them from the live feed). The badge survives
+                    # brief lost/recovering windows (badge_box holds the last
+                    # predicted position) so it does not flicker on relocate.
                     unknown_badges = {
                         t.tag: t.badge_box
                         for t in mark.tracks.values()
-                        if t.state == STABLE_UNKNOWN and t.in_zone and t.tag
+                        if (t.tag and t.in_zone and
+                            t.lost < mark.cfg.get("terminate_lost", 30) and
+                            t.state in (STABLE_UNKNOWN, TENTATIVE, CONFIRMED,
+                                        RECOVERING, UNCERTAIN))
                     }
 
                     # Share the latest detection boxes so the fast socket-thread

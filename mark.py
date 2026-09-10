@@ -65,7 +65,10 @@ MARK_DEFAULTS = {
     # automatic discovery / registration
     "stable_frames": 12,           # matched frames before a tag is STABLE_UNKNOWN
     "max_observations": 200,       # per-unknown-track observation ceiling
-    "unknown_reid_threshold": 0.28,# dist; strong match to a remembered unknown tag
+    "unknown_reid_threshold": 0.34,# dist; strong match to a remembered unknown tag
+    "unknown_reid_margin": 0.03,   # dist gap required before swapping to another tag
+    "unknown_mem_min_box_h": 48.0, # smaller unknown crops still feed re-id memory
+    "unknown_mem_sharp_frac": 0.15,# memory sharpness floor as a fraction of learning
     # identity state machine
     "match_threshold": 0.35,       # Bhattacharyya; above this = unknown
     "confirm_conf": 0.55,          # fused confidence needed to CONFIRM
@@ -523,6 +526,7 @@ class MarkTrack:
         self.last_recognized = 0
         # automatic discovery / registration
         self.tag = None                     # "unknown_0001" until assigned
+        self.tag_settled = False    # locked to a remembered tag (no more swaps)
         self.observations = collections.deque(
             maxlen=int(cfg.get("max_observations", 200)))
         self.views = collections.Counter()  # (scale, view) -> count
@@ -830,7 +834,9 @@ class MarkManager:
             trk = MarkTrack(self.next_id, dets[i], cfg, t)
             self.next_id += 1
             self.tracks[trk.id] = trk
-            trk.tag = self.bank.new_unknown_tag()
+            # No tag yet: the camera loop assigns one after the re-id probe,
+            # so a returning person reuses a remembered tag instead of burning
+            # a brand-new unknown_XXXX number.
             active.append(trk)
 
         for tid in [tid for tid, trk in list(self.tracks.items())
@@ -850,15 +856,37 @@ class MarkManager:
     def maybe_reid_unknown(self, trk, hist):
         """Re-identification for UNASSIGNED people: when a fresh track's
         appearance strongly matches a remembered unknown tag, reuse that tag
-        instead of minting a new unknown_XXXX (no duplicate unknowns)."""
+        instead of minting a new unknown_XXXX (no duplicate unknowns).
+
+        A tag adopted from memory is SETTLED for the life of the track, so a
+        person who reappears after leaving keeps their old tag and the badge
+        never flips between two tags frame-to-frame. A freshly MINTED tag stays
+        unsettled so it can still converge to a remembered tag if a clearly
+        better match appears (camera-crossing / far-first reappearances)."""
         if trk.identity is not None or hist is None:
             return trk.tag
+        if getattr(trk, "tag_settled", False):
+            return trk.tag
         res = self.bank.best_unknown(hist)
-        if res is not None:
-            tag, _d = res
-            if trk.tag != tag:
-                self.bank.forget_unknown(trk.tag)
-                trk.tag = tag
+        if res is None:
+            return trk.tag
+        tag, dist = res
+        if trk.tag is None:
+            trk.tag = tag
+            trk.tag_settled = True
+            return trk.tag
+        if tag == trk.tag:
+            return trk.tag
+        # swap only when the candidate is clearly better than the current tag's
+        # own best match, otherwise keep the current label (no flapping).
+        cur_dist = 2.0
+        bucket = self.bank.unknown_memory.get(trk.tag)
+        if bucket:
+            cur_dist = min(bhattacharyya(hist, h) for h in bucket[:80])
+        if dist <= cur_dist - self.cfg["unknown_reid_margin"]:
+            self.bank.forget_unknown(trk.tag)
+            trk.tag = tag
+            trk.tag_settled = True
         return trk.tag
 
 
@@ -888,6 +916,33 @@ def quality_gate(frame, box, cfg):
     sharp_frac = min(1.0, sharpness / cfg["learn_sharpness_min"])
     quality = 0.45 * size_frac + 0.40 * sharp_frac + 0.15 * min(1.0, crop_w / 80.0)
     return quality, quality >= cfg["learn_quality_min"]
+
+
+def quality_gate_lite(frame, box, cfg):
+    """Relaxed gate for the unknown re-id memory only (never for learning).
+
+    Re-id matching must still see a person that reappears FAR away, so far
+    crops are allowed as long as they are recognisably a person (minimum box
+    size + a sharpness floor) rather than noise/garbage. Detections are YOLO
+    person boxes, so a small-but-sharp crop is a usable appearance sample."""
+    x1, y1, x2, y2 = map(int, box)
+    hf, wf = frame.shape[:2]
+    x1 = max(0, min(x1, wf - 1))
+    x2 = max(0, min(x2, wf))
+    y1 = max(0, min(y1, hf - 1))
+    y2 = max(0, min(y2, hf))
+    crop_h = y2 - y1
+    crop_w = x2 - x1
+    if crop_h <= 2 or crop_w <= 2:
+        return False
+    if crop_h < cfg["unknown_mem_min_box_h"]:
+        return False
+    crop = frame[y1:y2, x1:x2].astype(np.float32)
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+    lap = cv2.Laplacian(gray, cv2.CV_32F)
+    sharpness = float(np.mean(lap * lap))
+    floor = cfg["learn_sharpness_min"] * cfg["unknown_mem_sharp_frac"]
+    return sharpness >= floor
 
 
 def mark_config(config):
