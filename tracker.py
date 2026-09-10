@@ -1708,6 +1708,7 @@ def api_doctor_delete():
     """Remove a doctor's account: delete the appearance profile file, the
     in-memory profile, its live/zone/presence state and stop any active
     tracking that refers to that name."""
+    global PROFILES
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
     if not name:
