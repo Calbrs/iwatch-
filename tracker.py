@@ -414,7 +414,7 @@ def camera_loop(cam, stop_event):
     """
     camera_id = cam["id"]
     global MARK_MANAGER
-    print(f"DEBUG camera_loop STARTED for {camera_id}")
+    print(f"DEBUG camera_loop STARTED for {camera_id}", flush=True)
     polygon = np.array(cam["chair_zone_polygon"], dtype=np.int32)
     zone_fitted = False
     frame_skip = cam["frame_skip"]
@@ -881,18 +881,18 @@ def _activate_link(link):
     Idempotent: if the link is already active its existing camera id is
     returned. Called by the HOST's Approve action (never by the device).
     """
-    print(f"DEBUG _activate_link called for {link.get('label')}, camera_id={link.get('camera_id')}")
+    print(f"DEBUG _activate_link called for {link.get('label')}, camera_id={link.get('camera_id')}", flush=True)
     cam_id = link.get("camera_id")
     with remote_source_lock:
         live = cam_id in remote_sources
     if live:
-        print(f"DEBUG _activate_link: camera_id {cam_id} is already live, returning")
+        print(f"DEBUG _activate_link: camera_id {cam_id} is already live, returning", flush=True)
         return cam_id
     if cam_id:
         # Stale id left over from a previous process (the link registry is
         # persisted across restarts but the camera sources are not). Discard
         # it so a fresh camera is allocated and its loop actually starts.
-        print(f"DEBUG _activate_link: camera_id {cam_id} is stale, reallocating")
+        print(f"DEBUG _activate_link: camera_id {cam_id} is stale, reallocating", flush=True)
         link["camera_id"] = None
 
     with cam_lock:
@@ -929,7 +929,7 @@ def _activate_link(link):
     link["frames"] = 0
     link["last_frame"] = None
 
-    print(f"REMOTE CAMERA ACTIVATED: {link['label']} ({camera_id})")
+    print(f"REMOTE CAMERA ACTIVATED: {link['label']} ({camera_id})", flush=True)
     return camera_id
 
 
@@ -1025,7 +1025,12 @@ def api_link_confirm(code):
 
     with link_lock:
         camera_id = link.get("camera_id") if link else None
-    if camera_id is None:
+    if camera_id:
+        with remote_source_lock:
+            live = camera_id in remote_sources
+    else:
+        live = False
+    if not live:
         with link_lock:
             link = link_store.get(code)
             if link is None:
