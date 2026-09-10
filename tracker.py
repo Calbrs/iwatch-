@@ -244,7 +244,7 @@ def init_db():
 
 
 def point_in_polygon(point, polygon):
-    """Ray-casting point-in-polygon test."""
+    """True if `point` is inside the given polygon (ray-casting)."""
     x, y = point
     n = len(polygon)
     inside = False
@@ -262,6 +262,21 @@ def point_in_polygon(point, polygon):
                         inside = not inside
         px, py = cx, cy
     return inside
+
+
+def frame_zone(poly_pts, w, h):
+    """Fit a configured chair zone to the actual frame size.
+
+    Zones are authored for the default 640x480 reference. If the zone is the
+    generic full-frame default it becomes the whole frame (whatever the aspect
+    ratio); otherwise it is scaled proportionally so a configured area still
+    lines up with the scene even when the device streams portrait video.
+    """
+    pts = np.array(poly_pts, dtype=np.int32).reshape(-1, 2)
+    default = np.array(DEFAULT_ZONE, dtype=np.int32).reshape(-1, 2)
+    if np.array_equal(pts, default):
+        return np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.int32)
+    return np.round(pts * np.array([w / 640.0, h / 480.0])).astype(np.int32)
 
 
 def new_state():
@@ -377,7 +392,7 @@ def camera_loop(cam, stop_event):
     camera_id = cam["id"]
     print(f"DEBUG camera_loop STARTED for {camera_id}")
     polygon = np.array(cam["chair_zone_polygon"], dtype=np.int32)
-    zone_reflected = False
+    zone_fitted = False
     frame_skip = cam["frame_skip"]
     confidence = cam["detection_confidence"]
 
@@ -415,12 +430,20 @@ def camera_loop(cam, stop_event):
             if frame_count % 300 == 1:
                 print(f"DEBUG camera_loop {camera_id}: frame_count={frame_count}, frame_shape={frame.shape if frame is not None else None}")
 
-            # Remote frames were flipped at the source (front camera is a
-            # mirror of reality). Reflect the configured chair zone along x so
-            # it still lines up with the physical chairs in the mirrored view.
-            if cam.get("remote") and not zone_reflected:
-                polygon[:, 0] = frame.shape[1] - polygon[:, 0]
-                zone_reflected = True
+            # Fit the configured chair zone to the ACTUAL frame size on the
+            # first frame. Phones stream portrait (653x853-style) while zones
+            # are authored for 640x480 landscape, which left a standing
+            # person's centroid outside the box and silently broke tracking.
+            if not zone_fitted:
+                h, w = frame.shape[:2]
+                polygon = frame_zone(cam["chair_zone_polygon"], w, h)
+                # Remote frames were flipped at the source (front camera is a
+                # mirror of reality). Reflect the zone along x so it lines up
+                # with the physical chairs in the mirrored view.
+                if cam.get("remote"):
+                    polygon[:, 0] = w - polygon[:, 0]
+                zone_fitted = True
+                print(f"DEBUG camera_loop {camera_id}: zone fitted to {w}x{h} -> {polygon.tolist()}")
 
             # Redraw badges from the last detection round, then publish the
             # frame IMMEDIATELY. Detection (YOLO) is the slowest step on the
@@ -438,6 +461,12 @@ def camera_loop(cam, stop_event):
                     with inference_lock:
                         results = MODEL.predict(frame, conf=confidence, verbose=False)
                     persons = [r for r in results[0].boxes if int(r.cls) == 0]
+
+                    # Visibility: people count + in-zone result every 30 frames
+                    # so actual detection/tracking can be confirmed in the log.
+                    if frame_count % 30 == 1:
+                        print(f"DETECT {camera_id}: {len(persons)} person(s) "
+                              f"(conf>={confidence}) frame={frame_count}")
 
                     # DEBUG: save first frame every 1000 frames for inspection
                     if frame_count % 1000 == 1:
@@ -484,6 +513,10 @@ def camera_loop(cam, stop_event):
                     # by the next raw frame arriving from the device).
                     with badge_lock:
                         latest_badges[camera_id] = dict(current_badges)
+
+                    if presence and frame_count % 30 == 1:
+                        print(f"TRACKED {camera_id} in-zone: {sorted(presence)} "
+                              f"badges={list(current_badges)} frame={frame_count}")
 
                     # Web self-enrollment: when a job targets this camera, collect
                     # samples whenever exactly one stable person can be tracked.
@@ -773,7 +806,7 @@ def _activate_link(link):
         "source": None,
         "remote": True,
         "chair_zone_polygon": list(zone),
-        "detection_confidence": CONFIG.get("detection_confidence", 0.5),
+        "detection_confidence": CONFIG.get("detection_confidence", 0.2),
         "frame_skip": CONFIG.get("frame_skip", 1),
     }
 
@@ -1491,7 +1524,7 @@ def main():
                                    or list(DEFAULT_ZONE)),
             "detection_confidence": ent.get(
                 "detection_confidence",
-                config.get("detection_confidence", 0.5)),
+                config.get("detection_confidence", 0.2)),
             "frame_skip": ent.get("frame_skip", config.get("frame_skip", 1)),
         }
         cap = cv2.VideoCapture(src_cfg)

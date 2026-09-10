@@ -21,7 +21,7 @@
                     400
                 ]
             ],
-            "detection_confidence": 0.5,
+            "detection_confidence": 0.2,
             "frame_skip": 1,
             "source": 0
         },
@@ -46,7 +46,7 @@
                     400
                 ]
             ],
-            "detection_confidence": 0.5,
+            "detection_confidence": 0.2,
             "frame_skip": 1,
             "source": 1
         },
@@ -71,7 +71,7 @@
                     480
                 ]
             ],
-            "detection_confidence": 0.5,
+            "detection_confidence": 0.2,
             "frame_skip": 1,
             "source": {
                 "remote": true
