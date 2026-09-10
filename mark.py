@@ -220,6 +220,7 @@ class IdentityBank:
         self.cfg = cfg
         self.identities = {}      # name -> {"protected": [hist], "templates": [Template]}
         self.unknown_memory = {}  # "unknown_0001" -> [hist, ...] (bounded, session)
+        self.unknown_identity = {}  # "unknown_0001" -> identity name seen on some camera
         self._tag_seq = 0
         self._lock = threading.RLock()
 
@@ -260,6 +261,19 @@ class IdentityBank:
     def forget_unknown(self, tag):
         with self._lock:
             self.unknown_memory.pop(tag, None)
+
+    def record_unknown_identity(self, tag, name):
+        """Mark a temporary unknown tag as 'this person was identified as
+        <name>' on some camera. Adopted tracks that reuse the tag elsewhere can
+        then inherit the cross-camera identity (with a matching guard)."""
+        if not tag or not name:
+            return
+        with self._lock:
+            current = self.unknown_identity.get(tag)
+            if current is None:
+                self.unknown_identity[tag] = name
+            elif current != name and name in self.identities:
+                self.unknown_identity[tag] = name
 
     def create_identity(self, name, observations, top_trusted=4):
         """Build a brand-new identity profile from a track's collected
@@ -882,6 +896,7 @@ class MarkManager:
         if trk.tag is None:
             trk.tag = tag
             trk.tag_settled = True
+            self._inherit_unknown_identity(trk, hist)
             return trk.tag
         if tag == trk.tag:
             return trk.tag
@@ -895,7 +910,32 @@ class MarkManager:
             self.bank.forget_unknown(trk.tag)
             trk.tag = tag
             trk.tag_settled = True
+            self._inherit_unknown_identity(trk, hist)
         return trk.tag
+
+    def _inherit_unknown_identity(self, trk, hist):
+        """Carry a confirmed identity across cameras: when a track adopts a
+        remembered unknown tag that was previously identified as <name> on
+        another camera, and the current appearance is at least weakly
+        consistent with that identity, recognise the track immediately instead
+        of waiting for the slow vote window (which may never converge from a
+        new camera angle)."""
+        if trk.identity is not None or hist is None:
+            return
+        name = self.bank.unknown_identity.get(trk.tag)
+        if not name or name not in self.bank.identities:
+            return
+        res = self.bank.match(hist, top_k=1)
+        if not res or res[0][0] != name:
+            return
+        dist = res[0][1]
+        if dist > self.cfg["match_threshold"] + 0.08:
+            return
+        trk.identity = name
+        trk.identity_conf = max(0.6, round(1.0 - dist, 2))
+        trk.state = CONFIRMED
+        trk.votes.clear()
+        trk.last_best = res[0]
 
 
 def quality_gate(frame, box, cfg):

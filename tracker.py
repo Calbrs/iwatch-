@@ -537,6 +537,12 @@ def camera_loop(cam, stop_event):
                         candidates = mark.bank.match(hist, top_k=3) if hist is not None else []
                         name = t.observe(candidates, hist, frame_count)
 
+                        # Remember what unknown tag this person was recognised
+                        # as, so a camera that adopts the same tag later can
+                        # inherit the identity (cross-camera continuity).
+                        if name and t.tag:
+                            mark.bank.record_unknown_identity(t.tag, name)
+
                         # Per-template performance bookkeeping on DECISION:
                         # promote candidates, roll back misbehaving templates.
                         if t.last_best is not None:
@@ -1517,7 +1523,7 @@ def api_assign():
         trk.state = CONFIRMED
         trk.votes.clear()
         trk.last_best = (name, 0.0, None)
-        bank.forget_unknown(tag)
+        bank.record_unknown_identity(tag, name)
         print(f"ASSIGNED (merge): {tag} -> {name} (existing profile)")
         return jsonify({"ok": True, "name": name, "tag": tag,
                         "observations": len(observations), "templates": 0,
@@ -1563,7 +1569,7 @@ def api_assign():
     trk.state = CONFIRMED
     trk.votes.clear()
     trk.last_best = (name, 0.0, None)
-    bank.forget_unknown(tag)
+    bank.record_unknown_identity(tag, name)
 
     print(f"ASSIGNED: {tag} -> {name} ({len(observations)} observations, "
           f"{len(bucket['templates'])} templates)")
