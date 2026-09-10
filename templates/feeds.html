@@ -94,7 +94,7 @@
                     card.innerHTML =
                         '<div class="people-head">' +
                         '  <span class="people-tag" style="background:' + color + '">' +
-                        (t.known ? t.identity : t.tag) + '</span>' +
+                        (t.known ? t.identity : (t.tag || "awaiting tag…")) + '</span>' +
                         '  <span class="people-state">' + t.state + '</span>' +
                         '</div>' +
                         '<div class="people-meta">' +

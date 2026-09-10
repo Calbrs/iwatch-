@@ -67,7 +67,7 @@ MARK_DEFAULTS = {
     "max_observations": 200,       # per-unknown-track observation ceiling
     "unknown_reid_threshold": 0.42,# dist; strong match to a remembered unknown tag
     "unknown_reid_margin": 0.03,   # dist gap required before swapping to another tag
-    "unknown_mint_lag": 45,        # frames to keep probing memory before minting a
+    "unknown_mint_lag": 15,        # frames to keep probing memory before minting a
                                    #   brand-new tag for a tagless track (so a
                                    #   returning person never gets a new number
                                    #   just because the first frame was poor)

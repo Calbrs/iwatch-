@@ -571,32 +571,45 @@ def camera_loop(cam, stop_event):
                         elif t.identity is None and not t.occluded:
                             # A tag is minted ONLY when the re-id probe fails for
                             # a while. A returning person reuses their old tag as
-                            # soon as one good frame matches; waiting a few dozen
-                            # frames prevents a poor first frame from burning a
-                            # brand-new unknown_XXXX number.
+                            # soon as one good frame matches; waiting a few frames
+                            # prevents a poor first frame from burning a
+                            # brand-new unknown_XXXX number. Observations are
+                            # still collected while the track is tagless, so a
+                            # brand-new person stays immediately assignable.
                             if t.tag is None:
                                 t.tag = mark.maybe_reid_unknown(t, hist)
                                 if (t.tag is None and
-                                        (t.matched >= mark.cfg.get("unknown_mint_lag", 45)
+                                        (t.matched >= mark.cfg.get("unknown_mint_lag", 15)
                                          or not mark.bank.unknown_memory)):
                                     t.tag = mark.bank.new_unknown_tag()
+                                    # remember what we already saw under the tag,
+                                    # so later re-identification has its history.
+                                    for o in t.observations[:60]:
+                                        mark.bank.remember_unknown(t.tag, o["hist"])
                             else:
                                 mark.maybe_reid_unknown(t, hist)
                             q, qok = quality_gate(frame, t.box, mark.cfg)
+                            # Observations are collected regardless of the tag
+                            # (hence of the mint-lag window) so a new person is
+                            # assignable ~immediately; the re-id MEMORY write
+                            # needs the tag, so it happens as soon as the track
+                            # is tagged (memory for a returning person already
+                            # exists from their previous appearance).
+                            if qok and t.state in (STABLE_UNKNOWN, TENTATIVE, CONFIRMED):
+                                scale = _scale_label(t.box, frame.shape[0])
+                                if t.add_observation(hist, scale, q, q,
+                                                     time.time(), frame_count):
+                                    if t.tag:
+                                        mark.bank.remember_unknown(t.tag, hist)
+                                    if t.tag and frame_count % 30 == 1:
+                                        print(f"DISCOVERY {camera_id}: {t.tag} "
+                                              f"obs so far={len(t.observations)} "
+                                              f"views={dict(list(t.views.items())[:8])}")
                             # Far views feed the re-id MEMORY (so a person who
                             # reappears far away still re-id's) even when they
                             # are not good enough for learning/registration.
                             if t.tag and hist is not None and quality_gate_lite(frame, t.box, mark.cfg):
                                 mark.bank.remember_unknown(t.tag, hist)
-                            if t.tag and qok and t.state in (STABLE_UNKNOWN, TENTATIVE, CONFIRMED):
-                                scale = _scale_label(t.box, frame.shape[0])
-                                if t.add_observation(hist, scale, q, q,
-                                                     time.time(), frame_count):
-                                    mark.bank.remember_unknown(t.tag, hist)
-                                    if frame_count % 30 == 1:
-                                        print(f"DISCOVERY {camera_id}: {t.tag} "
-                                              f"obs so far={len(t.observations)} "
-                                              f"views={dict(list(t.views.items())[:8])}")
                         if name:
                             in_zone_names.add(name)
 
