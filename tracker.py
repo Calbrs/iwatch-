@@ -247,7 +247,13 @@ def persist_config(config):
 
 
 def load_profiles_from_disk():
-    """Load all enrolled appearance profiles into {name: histogram} dict."""
+    """Load all enrolled appearance profiles into a slug-canonical dict:
+
+        {slug: {"name": "Display Name", "histogram": [...]}}
+
+    Every lookup shares ONE key (the sanitized slug) regardless of how the
+    display name is capitalised, so checks like "already enrolled" and
+    "delete doctor" cannot silently mismatch the on-disk file naming."""
     profiles = {}
     if os.path.isdir(PROFILES_DIR):
         for fname in os.listdir(PROFILES_DIR):
@@ -256,7 +262,10 @@ def load_profiles_from_disk():
                 try:
                     with open(path, "r", encoding="utf-8") as f:
                         data = json.load(f)
-                    profiles[data["name"]] = data["histogram"]
+                    profiles[sanitize_filename(data["name"])] = {
+                        "name": data["name"],
+                        "histogram": data["histogram"],
+                    }
                 except Exception as exc:
                     print(f"WARNING: failed to load profile {fname}: {exc}")
     return profiles
@@ -1428,7 +1437,7 @@ def api_tracks():
                 "camera_id": camera_id,
                 "tag": t.tag,
                 "identity": t.identity,
-                "known": t.identity in known if t.identity else False,
+                "known": (sanitize_filename(t.identity) in known) if t.identity else False,
                 "state": t.state,
                 "confidence": round(t.identity_conf, 2),
                 "box": [round(v, 1) for v in t.badge_box],
@@ -1690,7 +1699,7 @@ def api_enroll_status():
 def api_doctors():
     """List currently enrolled doctor accounts (their appearance profiles)."""
     with profile_lock:
-        names = sorted(PROFILES.keys())
+        names = sorted(entry["name"] for entry in PROFILES.values())
     return jsonify(names)
 
 
@@ -1707,15 +1716,22 @@ def api_doctor_delete():
     safe = sanitize_filename(name)
     path = os.path.join(PROFILES_DIR, safe + ".json")
     removed = False
+    raw = name
 
     with profile_lock:
-        if safe in PROFILES:
+        entry = PROFILES.get(safe)
+        if entry is not None:
+            raw = entry["name"]
             del PROFILES[safe]
+            removed = True
+        elif name in PROFILES:          # legacy raw-keyed in-memory profiles
+            raw = name
+            del PROFILES[name]
             removed = True
 
     if removed and MARK_MANAGER is not None:
-        MARK_MANAGER.bank.forget(safe)
-        MARK_MANAGER.forget_track_identity(safe)
+        MARK_MANAGER.bank.forget(raw)
+        MARK_MANAGER.forget_track_identity(raw)
 
     if os.path.exists(path):
         try:
@@ -1725,19 +1741,23 @@ def api_doctor_delete():
             return jsonify({"ok": False,
                             "message": f"Could not delete the profile file: {exc}"}), 500
     if not removed:
-        return jsonify({"ok": False, "message": f"No enrolled doctor named '{safe}'."}), 404
+        return jsonify({"ok": False,
+                        "message": f"No enrolled doctor named '{name}'."}), 404
 
     with state_lock:
-        states.pop(safe, None)
+        states.pop(raw, None)
     with live_lock:
-        live_status.pop(safe, None)
+        live_status.pop(raw, None)
     with presence_lock:
         for cam_presence in camera_presence.values():
             names = cam_presence.get("names")
             if isinstance(names, set):
-                names.discard(safe)
+                names.discard(raw)
 
-    print(f"DOCTOR REMOVED: {safe}")
+    with profile_lock:
+        PROFILES = load_profiles_from_disk()
+
+    print(f"DOCTOR REMOVED: {raw}")
     return jsonify({"ok": True})
 
 
@@ -1763,11 +1783,11 @@ def main():
     global PROFILES
     with profile_lock:
         PROFILES = load_profiles_from_disk()
-    for name in PROFILES:
+    for entry in PROFILES.values():
         with state_lock:
-            states[name] = new_state()
+            states[entry["name"]] = new_state()
         with live_lock:
-            live_status[name] = {"in_zone": False, "clock_in": None, "cameras": []}
+            live_status[entry["name"]] = {"in_zone": False, "clock_in": None, "cameras": []}
     if not PROFILES:
         print("WARNING: no doctor profiles enrolled yet. "
               "Use the web UI (/enroll) or enroll.py to add doctors.")
