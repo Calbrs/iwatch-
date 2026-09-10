@@ -1386,6 +1386,8 @@ def api_tracks():
     results = []
     with TRACK_MANAGERS_LOCK:
         managers = list(TRACK_MANAGERS.items())
+    print(f"DEBUG api_tracks: {len(managers)} manager(s), "
+          f"{sum(len(m.tracks) for _, m in managers)} track(s)", flush=True)
     for camera_id, mark in managers:
         with profile_lock:
             known = set(PROFILES)
