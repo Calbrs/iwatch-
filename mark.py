@@ -73,6 +73,14 @@ MARK_DEFAULTS = {
                                    #   just because the first frame was poor)
     "unknown_mem_min_box_h": 48.0, # smaller unknown crops still feed re-id memory
     "unknown_mem_sharp_frac": 0.15,# memory sharpness floor as a fraction of learning
+    # cross-camera reconciliation
+    "reconcile_threshold": 0.50,   # dist; closest identity candidate to inherit
+                                   #   from a peer camera (looser than the
+                                   #   commit threshold because camera angles
+                                   #   differ; still the #1 ranked identity)
+    "reconcile_stale_s": 6.0,      # peer track considered 'current' within this
+                                   #   recency window before its identity no
+                                   #   longer propagates to other cameras
     # identity state machine
     "match_threshold": 0.35,       # Bhattacharyya; above this = unknown
     "confirm_conf": 0.55,          # fused confidence needed to CONFIRM
@@ -554,6 +562,8 @@ class MarkTrack:
         self.views = collections.Counter()  # (scale, view) -> count
         self.obs_best_q = 0.0
         self.obs_best_conf = 0.0
+        self.created = time.time()
+        self.last_seen = time.time()
         if t is not None:
             self.motion.update(self.box, t)
 
@@ -836,6 +846,7 @@ class MarkManager:
             if best_i >= 0:
                 remaining.discard(best_i)
                 trk.associate(dets[best_i], t)
+                trk.last_seen = time.time()
                 # recovered from a detection gap: restore a live state
                 if trk.state in (LOST, RECOVERING):
                     trk.state = CONFIRMED if trk.identity else TENTATIVE

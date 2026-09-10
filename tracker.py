@@ -543,6 +543,43 @@ def camera_loop(cam, stop_event):
                         if name and t.tag:
                             mark.bank.record_unknown_identity(t.tag, name)
 
+                        # CROSS-CAMERA RECONCILIATION: when this track cannot
+                        # commit a name on its own camera (its angle is too
+                        # different), but another camera is CURRENTLY confirming
+                        # the SAME closest identity candidate for this person,
+                        # inherit it. Colour alone is weaker across cameras, so
+                        # we require: this track's closest candidate IS that
+                        # identity, within a loose band, AND a live peer track
+                        # on another camera is confirming it right now.
+                        if (name is None and t.identity is None and
+                                candidates and not t.occluded):
+                            cand_name, cand_dist = candidates[0][0], candidates[0][1]
+                            if cand_dist <= mark.cfg["reconcile_threshold"]:
+                                stale = mark.cfg["reconcile_stale_s"]
+                                now = time.time()
+                                with TRACK_MANAGERS_LOCK:
+                                    peers = [
+                                        pt for cid, pm in TRACK_MANAGERS.items()
+                                        if cid != camera_id
+                                        for pt in pm.tracks.values()
+                                        if (pt.identity == cand_name and
+                                            pt.in_zone and
+                                            pt.state == CONFIRMED and
+                                            now - pt.last_seen <= stale)
+                                    ]
+                                if peers:
+                                    t.identity = cand_name
+                                    t.state = CONFIRMED
+                                    t.identity_conf = max(t.identity_conf, 0.7)
+                                    t.votes.clear()
+                                    print(f"MARK: reconciled {camera_id} "
+                                          f"track {t.tag} -> {cand_name} "
+                                          f"(dist={cand_dist:.2f}) via "
+                                          f"{peers[0].id} on another camera")
+                                    if t.tag:
+                                        mark.bank.record_unknown_identity(
+                                            t.tag, cand_name)
+
                         # Per-template performance bookkeeping on DECISION:
                         # promote candidates, roll back misbehaving templates.
                         if t.last_best is not None:
@@ -608,9 +645,12 @@ def camera_loop(cam, stop_event):
                                     if t.tag:
                                         mark.bank.remember_unknown(t.tag, hist)
                                     if t.tag and frame_count % 30 == 1:
+                                        cand0 = (f"{candidates[0][0]}@{candidates[0][1]:.2f}"
+                                                 if candidates else "none")
                                         print(f"DISCOVERY {camera_id}: {t.tag} "
                                               f"obs so far={len(t.observations)} "
-                                              f"views={dict(list(t.views.items())[:8])}")
+                                              f"views={dict(list(t.views.items())[:8])} "
+                                              f"top1={cand0}")
                             # Far views feed the re-id MEMORY (so a person who
                             # reappears far away still re-id's) even when they
                             # are not good enough for learning/registration.
