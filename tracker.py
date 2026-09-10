@@ -882,9 +882,18 @@ def _activate_link(link):
     returned. Called by the HOST's Approve action (never by the device).
     """
     print(f"DEBUG _activate_link called for {link.get('label')}, camera_id={link.get('camera_id')}")
-    if link.get("camera_id"):
-        print(f"DEBUG _activate_link: already has camera_id {link['camera_id']}, returning")
-        return link["camera_id"]
+    cam_id = link.get("camera_id")
+    with remote_source_lock:
+        live = cam_id in remote_sources
+    if live:
+        print(f"DEBUG _activate_link: camera_id {cam_id} is already live, returning")
+        return cam_id
+    if cam_id:
+        # Stale id left over from a previous process (the link registry is
+        # persisted across restarts but the camera sources are not). Discard
+        # it so a fresh camera is allocated and its loop actually starts.
+        print(f"DEBUG _activate_link: camera_id {cam_id} is stale, reallocating")
+        link["camera_id"] = None
 
     with cam_lock:
         used = {c["id"] for c in cameras}
