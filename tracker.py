@@ -1449,6 +1449,7 @@ def api_assign():
     """Assign a real identity to an unknown track. The track's collected
     observations (quality + diversity filtered) become the person's initial
     profile. Identity is ONLY ever set by this explicit admin action."""
+    global PROFILES
     data = request.get_json(silent=True) or {}
     camera_id = (data.get("camera_id") or "").strip()
     tag = (data.get("tag") or "").strip()
