@@ -37,8 +37,9 @@ from simple_websocket import ConnectionClosed, Server
 from ultralytics import YOLO
 
 from appearance import compute_torso_histogram, sanitize_filename
-from mark import (CONFIRMED, STABLE_UNKNOWN, UNCERTAIN, IdentityBank,
-                  MarkManager, _scale_label, mark_config, quality_gate)
+from mark import (CONFIRMED, STABLE_UNKNOWN, TENTATIVE, UNCERTAIN,
+                  IdentityBank, MarkManager, _scale_label, mark_config,
+                  quality_gate)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
